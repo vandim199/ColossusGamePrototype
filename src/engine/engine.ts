@@ -155,7 +155,7 @@ function rand(s: GameState): number {
 
 export const hunterName = (h: HunterState) => CLASSES[h.cls].short;
 
-const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const plural = (n: number, w: string) => `${n} ${n === 1 ? w : w === 'hex' ? 'hexes' : `${w}s`}`;
 
 function gainArmor(s: GameState, n: number): number {
   const before = s.colossus.armor;
@@ -315,6 +315,7 @@ function resolveRound(s: GameState, revealed: BossPlay[], salt: string, forfeite
     log(s, 'reveal', 'boss', `The Colossus ${bossSuper ? 'SUPER RESTS' : 'Rests'}: reclaims its cards and restores ${gained} Armor${rest.hex ? ' (plus one free Red Cube)' : ''}.`);
   }
 
+  if (!s.tumble) s.stats.standingRounds++;
   step31Movement(s);
   if (!s.winner) step32Cubes(s);
   const ctx = { halve: false };

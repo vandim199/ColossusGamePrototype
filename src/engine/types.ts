@@ -182,6 +182,8 @@ export interface GameStats {
   /** Rounds each climb lasted (mount to dismount). */
   climbLengths: number[];
   armorDamage: number;
+  /** Rounds the Colossus spent standing (Armor damage only matters then). */
+  standingRounds: number;
   damageToHunters: number;
 }
 

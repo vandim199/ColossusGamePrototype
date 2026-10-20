@@ -123,6 +123,7 @@ export function createGame(opts: NewGameOptions): GameState {
       pointRounds: [],
       climbLengths: [],
       armorDamage: 0,
+      standingRounds: 0,
       damageToHunters: 0,
     },
   };
