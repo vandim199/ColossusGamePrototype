@@ -24,7 +24,7 @@ import {
 import { BOSS_CARDS, CLASSES, bossDef, cardType, hunterDef, isRestCard, type HunterCardDef } from './cards';
 import { verifyCommitment } from './commit';
 import { DIE_FACES, UPGRADE, dieAverage, rollDie, type DieKind } from './dice';
-import { DIR_NAMES, dist, inBoard, parse, type HexKey } from './hex';
+import { DIR_NAMES, dist, hexLabel, inBoard, parse, type HexKey } from './hex';
 import { nextRandom } from './rng';
 import {
   activeHunters,
@@ -333,7 +333,7 @@ export function describeBossPlay(p: BossPlay): string {
   const def = bossDef(p.card);
   const bits: string[] = [];
   if (p.dir !== undefined) bits.push(DIR_NAMES[p.dir]);
-  for (const t of p.targets ?? []) bits.push(t.node ? NODE_NAMES[t.node] : `hex ${t.hex}`);
+  for (const t of p.targets ?? []) bits.push(t.node ? NODE_NAMES[t.node] : hexLabel(t.hex!));
   return bits.length ? `${def.name} (${bits.join(', ')})` : def.name;
 }
 

@@ -56,6 +56,12 @@ export function inBoard(h: Hex): boolean {
 }
 export const inBoardKey = (k: HexKey): boolean => inBoard(parse(k));
 
+/** Human-readable board label: column letter A-J, row number 1-10 (e.g. "E5"). */
+export function hexLabel(k: HexKey): string {
+  const { col, row } = toOffset(parse(k));
+  return col >= 0 && col < BOARD_COLS && row >= 0 && row < BOARD_ROWS ? `${'ABCDEFGHIJ'[col]}${row + 1}` : `(${k})`;
+}
+
 /** Every board hex, in offset reading order (row by row). Deterministic. */
 export const ALL_HEXES: readonly HexKey[] = (() => {
   const out: HexKey[] = [];
