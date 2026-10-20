@@ -4,8 +4,28 @@
     {
       "name": "colossus-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--strictPort"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
       "port": 5173
+    },
+    {
+      "name": "colossus-pages-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "4173",
+        "--directory",
+        "C:/Users/vandi/AppData/Local/Temp/claude/C--Users-vandi-Documents-GitHub-ColossusGamePrototype/2f842f0c-432c-4e4f-bb13-44dc98ee3538/scratchpad/site"
+      ],
+      "port": 4173,
+      "url": "http://localhost:4173"
     }
   ]
 }

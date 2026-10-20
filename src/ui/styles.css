@@ -74,7 +74,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; margin: 0; }
 .controls { grid-column: 1 / -1; border-top: 1px solid var(--line); background: var(--panel); padding: 10px 14px; max-height: 40vh; overflow-y: auto; }
 
 @media (max-width: 900px) {
-  .game { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto auto; height: auto; }
+  /* Phone order: board, then your hand, then the trackers and log. */
+  .game { display: flex; flex-direction: column; height: auto; }
+  .board-wrap { order: 1; }
+  .controls { order: 2; }
+  .side { order: 3; }
   .board-wrap { padding: 4px; }
   .side { border-left: 0; border-top: 1px solid var(--line); }
   .controls { max-height: none; }

@@ -76,6 +76,18 @@ Baseline with v2.5 numbers and both bots on `normal` (seeds 1-200):
 - The Colossus bot avoids Hunters who hold Parry. The Hunter bot only parries when it reads that it is the likely target. That keeps Parries rare, so the Parry stat is a lower bound for human play.
 - Difficulty shifts the win rate as expected. A hard Colossus against easy Hunters wins ~60%. An easy Colossus against hard Hunters wins ~32%.
 
+## Deploying to GitHub Pages
+
+`.github/workflows/deploy.yml` builds and deploys the site:
+
+1. In the repo, go to **Settings → Pages → Build and deployment → Source** and choose **GitHub Actions** (one-time setup).
+2. Merge into `main` and push. The workflow runs the tests, a 20-game AI vs AI smoke run and the type-checked build, then publishes `dist/` to `https://<user>.github.io/<repo>/`. For this repo that is https://vandim199.github.io/ColossusGamePrototype/.
+3. To redeploy without a new commit, go to **Actions → Build and deploy → Run workflow** on `main`.
+
+Pushes to other branches and pull requests run the tests and the build only.
+
+The build uses relative asset paths (`base: './'`) and hash links (`#room=CODE`), so it works under any subpath with no extra configuration and no 404 page.
+
 ## Layout
 
 | Path | What it is |

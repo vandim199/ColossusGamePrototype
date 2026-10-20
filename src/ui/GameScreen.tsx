@@ -240,7 +240,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
           <div className="modal">
             <h2>{s.winner === 'hunters' ? 'The Hunters win!' : s.winner === 'colossus' ? 'The Colossus wins!' : 'Draw'}</h2>
             <p>
-              {s.winner === 'hunters' ? `${s.points} Vital Strike points in ${s.round} rounds.` : s.winner === 'colossus' ? `Every Hunter is Down after ${s.round} rounds.` : 'Round limit reached.'}
+              {s.winner === 'hunters' ? `${s.points} Vital Strike points in ${s.round} round${s.round === 1 ? '' : 's'}.` : s.winner === 'colossus' ? `Every Hunter is Down after ${s.round} round${s.round === 1 ? '' : 's'}.` : 'Round limit reached.'}
             </p>
             <p className="muted">
               Parries {s.stats.parries} · whiffs {s.stats.whiffs} · Armor Shatters {s.stats.shatters} · Exhaustions {s.stats.exhaustions} · Downs {s.stats.downs} · falls {s.stats.falls}
