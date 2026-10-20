@@ -84,3 +84,14 @@
 41. **Super Rest upgrades** the weakest upgradable die in the attack pool. The Vanguard has nothing to upgrade, so its Super Rest gives +1 max HP from the start. Max HP caps at 14.
 42. **Harmonic Hymn** heals the Bard and every ally within 3 hexes by 2. **Rescue Beam** rolls one Pull d6. An ally within 5 hexes is then pulled hex by hex toward the Bard, stopping when adjacent.
 43. **Round limit:** 80 rounds, then the game is a draw. This is a simulator safety valve. The fatigue clock ends real games far sooner.
+
+## Online play
+
+These are prototype decisions about the GDD's rules in a networked setting.
+
+44. **The host's browser is the authority.** It runs the engine and the bots. When the Colossus is human, the host sits in the Colossus seat by default, because the host machine holds the full state, including the Colossus hand. Whoever hosts, commit-reveal proves the Colossus never changes its locked cards. Each client re-hashes the revealed cards plus salt and checks the result against the hash it was shown at lock time.
+45. **Hunter commits** are visible to the other Hunters before the reveal, matching the open table talk. They are hidden from the Colossus and from spectators until the reveal. The Colossus has already locked by then, so this costs it nothing.
+46. **Hunter hands** are public, since anyone can deduce them from the face-up discards. Only the Colossus hand (a card count is shown) and the order of the Rage deck are private.
+47. **An unopened commitment voids the lock.** If a Colossus player disconnects before the reveal, or sends a reveal that does not match its hash, its locked cards do nothing that round and the cubes it just placed are removed. The round then resolves with the Hunters' cards only. A connected remote Colossus gets 15 seconds to open its commitment.
+48. **Dropped players.** A bot plays a dropped player's seat from that moment, at the room's difficulty. Any commit the player already made stands. The player reclaims the seat by rejoining from the same tab (reloading the room link). A new tab or device can take over a dropped seat from the lobby screen.
+49. **The turn timer** covers the lock and commit steps. When it runs out, a bot plays for every seat that has not acted. The reveal step is automatic.

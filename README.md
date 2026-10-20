@@ -24,6 +24,26 @@ Each round has three steps:
 2. **Commit (Hunters).** Pick 2 cards in the order they should resolve, then click highlighted hexes for each move. Your team's committed plans show as dashed arrows. You can change your commit until the last Hunter commits.
 3. **Reveal.** A panel flips the Colossus's cards, shows the SHA-256 check, then plays the resolution step by step while the board highlights each event.
 
+## Playing online (peer to peer)
+
+There is no server. Browsers connect directly over WebRTC with [Trystero](https://github.com/dmotz/trystero), which uses public Nostr relays only to introduce peers. The networking sits behind a small `Transport` interface in `src/net/transport.ts`, so PeerJS or a hosted backend can replace it later.
+
+1. **Create room.** You get a 5-letter code and a shareable link, and you take the Colossus seat by default.
+2. **Players join.** Others open the link, or type the code under **Join a room**.
+3. **The lobby** shows a seat for the Colossus and one per Hunter class. Players click **Sit here** to claim one. The host can set any empty seat to a bot, set each bot's difficulty, and pick the mode, timer and default bot difficulty.
+4. **Start game.** Every unclaimed seat becomes a bot.
+
+The host's browser runs the engine and the bots. Clients only send actions and only receive their own seat's view. The Colossus commits a SHA-256 hash of its locked cards plus a salt. At the reveal every client re-hashes the cards to check them.
+
+If a player drops, a bot takes their seat at once. Reloading the same tab reclaims it, and anyone can take over a dropped seat from the lobby. If the host leaves, everyone sees a "Host left" message.
+
+### Testing with two tabs on one machine
+
+- **Over the real network:** create a room, copy the link, and open it in a second tab. Both tabs connect over WebRTC through the public relays, so you need internet access.
+- **Offline:** tick **Same-machine test** before creating the room. The link then carries `&net=local`, and tabs talk over `BroadcastChannel` with no internet needed. Open the link in a second tab to join.
+
+To test a reconnect, reload the client tab mid-game. A bot covers the seat, then the player gets it back. To test a host drop, close or leave the host tab.
+
 ## AI vs AI simulator
 
 ```bash
@@ -65,4 +85,5 @@ Baseline with v2.5 numbers and both bots on `normal` (seeds 1-200):
 | `src/bots/` | Colossus and Hunter bots (used for solo play, empty seats, dropped players, turn timeouts and the simulator) |
 | `src/sim/` | Headless AI vs AI runner and stats report |
 | `src/host/` | `GameHost` (the authority: engine, seat controllers, bots, turn timer) and `Session`/`SeatClient` (what a UI talks to; holds the Colossus's secret between lock and reveal) |
+| `src/net/` | Peer-to-peer: `Transport` interface (Trystero WebRTC, or BroadcastChannel for same-machine tests), lobby protocol, `NetHost` (authority side) and `NetClient` |
 | `src/ui/` | React UI: SVG hex arena, body board, hand, status strip, reveal panel, combat log |

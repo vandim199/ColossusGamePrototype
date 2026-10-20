@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { verifyCommitment, type HexKey, type LogEvent, type NodeId } from '../engine';
 import type { Session } from '../host/session';
 import { roleName, type ClientView } from '../host/types';
@@ -6,11 +6,14 @@ import { Board } from './Board';
 import { BossControls, HunterControls, RevealedBossCard, teammateArrows, type BoardOverlay } from './Controls';
 import { BodyBoard, ColossusPanel, CombatLog, HuntersPanel, StatusStrip } from './Panels';
 
+/** Re-render on every session event (a new view, but also "host left", which changes no view). */
 export function useSessionView(session: Session): ClientView | null {
-  return useSyncExternalStore(
-    (fn) => session.subscribe(fn),
-    () => session.view(),
-  );
+  const [, setVersion] = useState(0);
+  useEffect(() => {
+    const off = session.subscribe(() => setVersion((v) => v + 1));
+    return () => void off();
+  }, [session]);
+  return session.view();
 }
 
 function useNow(active: boolean) {
@@ -40,9 +43,23 @@ const NODE_BY_NAME: Record<string, NodeId> = {
   'Right Head': 'H2',
 };
 
-function RevealOverlay({ view, events, onFocus, onClose }: { view: ClientView; events: LogEvent[]; onFocus: (f: { hexes: HexKey[]; nodes: NodeId[] } | null) => void; onClose: () => void }) {
+function RevealOverlay({
+  view,
+  events,
+  expected,
+  onFocus,
+  onClose,
+}: {
+  view: ClientView;
+  events: LogEvent[];
+  /** The commitment this client saw at lock time, before any Hunter committed. */
+  expected: string | undefined;
+  onFocus: (f: { hexes: HexKey[]; nodes: NodeId[] } | null) => void;
+  onClose: () => void;
+}) {
   const r = view.state.lastReveal!;
-  const verified = useMemo(() => !r.forfeited && verifyCommitment(r.commitment, r.plays, r.salt), [r]);
+  // Every client re-hashes the revealed cards + salt itself, and checks it is the hash it was shown at lock time.
+  const verified = useMemo(() => !r.forfeited && verifyCommitment(r.commitment, r.plays, r.salt) && (!expected || expected === r.commitment), [r, expected]);
   const [shown, setShown] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -67,7 +84,7 @@ function RevealOverlay({ view, events, onFocus, onClose }: { view: ClientView; e
     <div className="reveal" role="dialog" aria-label={`Round ${r.round} reveal`}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <h2>Round {r.round}: Reveal</h2>
-        <span className={`tag ${verified ? 'ok' : 'bad'}`} title={`commitment ${r.commitment}\nsalt ${r.salt}`}>
+        <span className={`tag ${verified ? 'ok' : 'bad'}`} title={`Hash shown at lock: ${expected ?? 'not seen'}\nRevealed salt: ${r.salt}\nSHA-256(cards + salt) = ${r.commitment}`}>
           {r.forfeited ? 'forfeited' : verified ? 'SHA-256 verified ✓' : 'hash mismatch!'}
         </span>
       </div>
@@ -107,6 +124,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
   const seenReveal = useRef(0);
   const [focus, setFocus] = useState<{ hexes: HexKey[]; nodes: NodeId[] } | null>(null);
   const timerEnd = useRef<{ key: string; endsAt: number } | null>(null);
+  const seenCommitments = useRef(new Map<number, string>());
 
   const s = view?.state;
   useEffect(() => {
@@ -117,6 +135,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
     }
   }, [s?.lastReveal?.round]);
 
+  if (s?.lock && s.phase !== 'bossLock' && !seenCommitments.current.has(s.round)) seenCommitments.current.set(s.round, s.lock.commitment);
   if (view && s) {
     const key = `${s.round}:${s.phase}`;
     if (view.timer && timerEnd.current?.key !== key) timerEnd.current = { key, endsAt: Date.now() + view.timer.remainingMs };
@@ -193,6 +212,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
           key={revealRound}
           view={view}
           events={revealEvents}
+          expected={seenCommitments.current.get(revealRound)}
           onFocus={setFocus}
           onClose={() => {
             setRevealRound(null);
@@ -201,7 +221,21 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
         />
       )}
 
-      {s.phase === 'gameOver' && revealRound === null && (
+      {problem && (
+        <div className="modal-back">
+          <div className="modal">
+            <h2>Host left</h2>
+            <p>{problem} The host's browser was running the game, so it cannot continue.</p>
+            <div className="row">
+              <button className="btn primary" onClick={onExit}>
+                Back to menu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {s.phase === 'gameOver' && revealRound === null && !problem && (
         <div className="modal-back">
           <div className="modal">
             <h2>{s.winner === 'hunters' ? 'The Hunters win!' : s.winner === 'colossus' ? 'The Colossus wins!' : 'Draw'}</h2>
