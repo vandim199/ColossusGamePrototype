@@ -8,7 +8,7 @@ export const cardType = (id: string): string => id.slice(0, id.indexOf('.') === 
 
 // ---------------------------------------------------------------- Colossus
 
-export type BossCardKind = 'telegraph' | 'quick' | 'charged' | 'reaction' | 'rest';
+export type BossCardKind = 'telegraph' | 'quick' | 'charged' | 'move' | 'reaction' | 'rest';
 
 export interface BossCardDef {
   type: string;
@@ -16,26 +16,27 @@ export interface BossCardDef {
   kind: BossCardKind;
   text: string;
   /** What the card needs when locked. */
-  needs: 'none' | 'dir' | 'adjacentHex' | 'hexOrNode' | 'twoTargets' | 'restCube';
+  needs: 'none' | 'aim' | 'adjacentHex' | 'anyHex' | 'twoHexes' | 'restCube';
   rage?: boolean;
 }
 
 const boss = (d: BossCardDef) => d;
 
 export const BOSS_CARDS: Record<string, BossCardDef> = {
-  triCone: boss({ type: 'triCone', name: 'Tri-Cone Blast', kind: 'telegraph', needs: 'dir', text: '3 cone lanes of 3 hexes. Red Cubes: 5 damage per hex next round.' }),
-  lineBurst: boss({ type: 'lineBurst', name: 'Line Burst', kind: 'telegraph', needs: 'dir', text: 'One straight 5-hex line from the Colossus. Red Cubes: 5 damage next round.' }),
-  ringSlam: boss({ type: 'ringSlam', name: 'Ring Slam', kind: 'telegraph', needs: 'none', text: 'Every hex at distance 2 from the Colossus. Red Cubes: 5 damage next round.' }),
-  quickSwipe: boss({ type: 'quickSwipe', name: 'Quick Swipe', kind: 'quick', needs: 'adjacentHex', text: '1 adjacent ground hex: 3 damage, knockback 2.' }),
-  bodyThrash: boss({ type: 'bodyThrash', name: 'Body Thrash', kind: 'quick', needs: 'hexOrNode', text: '1 ground hex or body node: 3 damage, -3 Grip.' }),
+  triCone: boss({ type: 'triCone', name: 'Tri-Cone Blast', kind: 'telegraph', needs: 'aim', text: 'Aim anywhere: a V-shaped cone (a third of the arena) from the Colossus to the edge. Red Cubes: 5 damage next round.' }),
+  lineBurst: boss({ type: 'lineBurst', name: 'Line Burst', kind: 'telegraph', needs: 'aim', text: 'Aim anywhere: a straight line from the Colossus to the arena edge. Red Cubes: 5 damage next round.' }),
+  ringSlam: boss({ type: 'ringSlam', name: 'Ring Slam', kind: 'telegraph', needs: 'none', text: 'Every hex 2 or 3 away from the Colossus. Red Cubes: 5 damage next round.' }),
+  quickSwipe: boss({ type: 'quickSwipe', name: 'Quick Swipe', kind: 'quick', needs: 'adjacentHex', text: 'An arc of 3 adjacent hexes: 3 damage, knockback 2.' }),
+  bodyThrash: boss({ type: 'bodyThrash', name: 'Body Thrash', kind: 'quick', needs: 'anyHex', text: 'A hex and its neighbours: 3 damage. Aim at your own body to hit climbers there.' }),
   feint: boss({ type: 'feint', name: 'Feint', kind: 'quick', needs: 'none', text: 'Looks like a Quick Attack; does nothing, but every Hunter who Parried is Exposed.' }),
-  chargeForward: boss({ type: 'chargeForward', name: 'Charge Forward', kind: 'charged', needs: 'dir', text: 'Declared now, resolves next round: surge to the board edge, 4 damage and knockback in the path.' }),
-  tailSweep: boss({ type: 'tailSweep', name: 'Tail Sweep', kind: 'charged', needs: 'none', text: 'Declared now, resolves next round: every hex on the back half of the ring takes 4 damage.' }),
+  chargeForward: boss({ type: 'chargeForward', name: 'Charge Forward', kind: 'charged', needs: 'aim', text: 'Declared now, resolves next round: surge toward the aimed hex all the way to the edge. 4 damage in the path.' }),
+  tailSweep: boss({ type: 'tailSweep', name: 'Tail Sweep', kind: 'charged', needs: 'none', text: 'Declared now, resolves next round: the back half of the two rings around the Colossus takes 4 damage.' }),
+  stride: boss({ type: 'stride', name: 'Stride', kind: 'move', needs: 'aim', text: 'Walk up to 2 hexes toward the aimed hex (end of the round). Hunters trampled in the way take 2 and are pushed aside.' }),
   blastingShell: boss({ type: 'blastingShell', name: 'Blasting Shell', kind: 'reaction', needs: 'none', text: 'If all but one Hunter attack: reflect 2 to each attacker and gain 3 Armor. Otherwise lose 2 Armor.' }),
-  rest: boss({ type: 'rest', name: 'Rest', kind: 'rest', needs: 'restCube', text: 'Played alone. Reclaim your discard, restore 2 Armor. Super Rest (last card): restore 4 Armor and place 1 free Red Cube.' }),
-  stompQuake: boss({ type: 'stompQuake', name: 'Stomp Quake', kind: 'quick', needs: 'none', rage: true, text: 'Rage. Every hex adjacent to the Colossus takes 2 damage. Climbers lose 2 Grip.' }),
-  roar: boss({ type: 'roar', name: 'Roar', kind: 'quick', needs: 'none', rage: true, text: 'Rage. All Hunters are pushed 2 hexes away. Cancels Parries this round (no whiff penalty).' }),
-  wildThrash: boss({ type: 'wildThrash', name: 'Wild Thrash', kind: 'quick', needs: 'twoTargets', rage: true, text: 'Rage. Two Quick Attacks: 2 ground hexes or body nodes, 3 damage and -3 Grip each.' }),
+  rest: boss({ type: 'rest', name: 'Rest', kind: 'rest', needs: 'restCube', text: 'Reclaim your discard and restore 2 Armor. Super Rest (your last card): restore 4 and place 1 free Red Cube.' }),
+  stompQuake: boss({ type: 'stompQuake', name: 'Stomp Quake', kind: 'quick', needs: 'none', rage: true, text: 'Rage. Every hex adjacent to the Colossus takes 2 damage. Climbers take 2.' }),
+  roar: boss({ type: 'roar', name: 'Roar', kind: 'quick', needs: 'none', rage: true, text: 'Rage. All Hunters on the ground are pushed 2 hexes away. Cancels Parries this round (no whiff penalty).' }),
+  wildThrash: boss({ type: 'wildThrash', name: 'Wild Thrash', kind: 'quick', needs: 'twoHexes', rage: true, text: 'Rage. Two Body Thrashes at once.' }),
   shellHarden: boss({ type: 'shellHarden', name: 'Shell Harden', kind: 'quick', needs: 'none', rage: true, text: 'Rage. Gain 4 Armor; Hunter attacks this round deal half damage, rounded down.' }),
 };
 
@@ -45,7 +46,7 @@ export const bossDef = (id: string): BossCardDef => {
   return d;
 };
 
-/** The 14-card Colossus deck. */
+/** The 16-card Colossus deck (the GDD's 14 plus two Strides so it can walk). */
 export const BOSS_DECK: readonly string[] = [
   'triCone.1', 'triCone.2',
   'lineBurst.1', 'lineBurst.2',
@@ -55,13 +56,18 @@ export const BOSS_DECK: readonly string[] = [
   'feint.1',
   'chargeForward.1',
   'tailSweep.1',
+  'stride.1', 'stride.2',
   'blastingShell.1',
   'rest.1',
 ];
 
 export const RAGE_DECK: readonly string[] = ['stompQuake.r', 'roar.r', 'wildThrash.r', 'shellHarden.r'];
 
-
+/** Cards a Tumbled Colossus cannot play: it is lying down, so it cannot charge or walk. */
+export const lockedWhileTumbled = (id: string) => {
+  const k = bossDef(id).kind;
+  return k === 'charged' || k === 'move';
+};
 
 // ---------------------------------------------------------------- Hunters
 
@@ -80,9 +86,9 @@ export interface HunterCardDef {
 const hc = (d: HunterCardDef) => d;
 
 export const HUNTER_CARDS: Record<string, HunterCardDef> = {
-  rest: hc({ type: 'rest', name: 'Rest', rest: true, text: 'Played alone. Reclaim your discard, burn 1 card, recover 2 HP. Super Rest (last card): recover 4 HP and upgrade a die.' }),
-  parry: hc({ type: 'parry', name: 'Parry', parry: true, text: 'Play with a move. If a Quick Attack targets your final hex: no damage, Short Tumble, Charged Attack cancelled. Whiff: Exposed next round.' }),
-  climb: hc({ type: 'climb', name: 'Climb & Strike', climb: true, text: 'During a Tumble, if adjacent: mount a Legs node at Grip 6. On the body it strikes like an attack.' }),
+  rest: hc({ type: 'rest', name: 'Rest', rest: true, text: 'Reclaim your discard pile and recover 2 HP. Super Rest (your last card): recover 4 HP and upgrade a die.' }),
+  parry: hc({ type: 'parry', name: 'Parry', parry: true, text: 'If a Quick Attack hits your final hex: no damage, Short Tumble, Charged Attack cancelled. Whiff: Exposed next round.' }),
+  climb: hc({ type: 'climb', name: 'Climb & Strike', climb: true, text: 'During a Tumble, if adjacent: climb onto the nearest body hex. On the core (central hex) it strikes like an attack.' }),
   // Quick Slasher
   slash: hc({ type: 'slash', name: 'Slash', attack: { range: 1, roll: 'pool' }, text: 'Melee. Roll your 6 Slasher dice + Momentum.' }),
   vectorDash: hc({ type: 'vectorDash', name: 'Infinite Vector Dash', move: { kind: 'walk', range: 3 }, attack: { range: 1, roll: 'vector' }, text: 'Move up to 3, then melee: roll 4 dice + Momentum.' }),

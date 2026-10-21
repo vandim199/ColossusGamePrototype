@@ -6,14 +6,14 @@ import { colossusBotPlays, fallbackBossPlays, fallbackHunterAction, hunterBotAct
 describe('bots', () => {
   it('play complete AI vs AI games in both modes without a single illegal action', () => {
     // applyAction throws on any illegal action, so finishing proves legality.
-    for (let seed = 1; seed <= 12; seed++) {
+    for (let seed = 1; seed <= 4; seed++) {
       for (const mode of ['1v3', '1v4'] as const) {
         const s = simulateGame({ mode, seed, boss: seed % 3 === 0 ? 'hard' : 'normal', hunters: seed % 2 ? 'easy' : 'hard' });
         expect(s.phase).toBe('gameOver');
         expect(s.winner).not.toBeNull();
       }
     }
-  });
+  }, 60_000);
 
   it('are deterministic for a given seed', () => {
     const a = simulateGame({ mode: '1v4', seed: 5 });

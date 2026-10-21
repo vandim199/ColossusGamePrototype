@@ -1,26 +1,33 @@
 // Game-specific geometry on top of hex.ts: the 7-hex Colossus, its rings,
-// telegraph patterns, Hunter reachability, knockback and the Charge path.
+// aimed attack shapes, Hunter reachability (on the ground and on the body),
+// knockback, and the Colossus walking or charging toward a point.
 
 import { hunterDef } from './cards';
 import {
   ALL_HEXES,
+  ALL_DIRS,
   DIRS,
   add,
+  angleBetween,
+  angleDiff,
   bearing,
   distance,
+  fromPixel,
   inBoard,
   key,
   neighbors,
   parse,
   ring,
-  scale,
   toPixel,
   type Dir,
   type HexKey,
 } from './hex';
-import type { GameState, HunterState, NodeId } from './types';
+import type { GameState, HunterState } from './types';
 
-export const CUBE_BUDGET = 30;
+/** Damage the Colossus's core must take from climbers (in one climb) to land a Vital Strike. */
+export const BURST_TARGET = 4;
+/** Damage a climber takes when shaken off after a failed Burst. */
+export const SHAKE_DAMAGE = 4;
 
 // ---------------------------------------------------------------- Colossus body
 
@@ -45,79 +52,182 @@ export function bodyRing(center: HexKey, d: number): HexKey[] {
 
 export const isAdjacentToColossus = (s: GameState, h: HexKey) => distToBody(s.colossus.center, h) === 1;
 
-// ---------------------------------------------------------------- telegraphs
+/** Ground hexes (on the board, off the body), in reading order. */
+export function groundHexes(center: HexKey): HexKey[] {
+  const body = new Set(bodyHexes(center));
+  return ALL_HEXES.filter((h) => !body.has(h));
+}
 
-/** Tri-Cone: three rays (dir-1, dir, dir+1), each 3 hexes, starting next to the body. */
-export function triConeHexes(center: HexKey, dir: Dir): HexKey[] {
+// ---------------------------------------------------------------- aimed shapes
+
+/** Tri-Cone: a 120-degree V (a third of the arena around the Colossus) pointing at the aim, out to the edge. */
+export function coneHexes(center: HexKey, aim: HexKey): HexKey[] {
+  if (aim === center) return [];
   const c = parse(center);
+  const a = angleBetween(c, parse(aim));
+  return groundHexes(center).filter((h) => angleDiff(angleBetween(c, parse(h)), a) <= Math.PI / 3 + 1e-6);
+}
+
+/** Line Burst: a straight line from the Colossus toward the aim, all the way to the arena edge. */
+export function lineHexes(center: HexKey, aim: HexKey): HexKey[] {
+  if (aim === center) return [];
+  const c = parse(center);
+  const from = toPixel(c);
+  const to = toPixel(parse(aim));
+  const len = Math.hypot(to.x - from.x, to.y - from.y);
+  const ux = (to.x - from.x) / len;
+  const uy = (to.y - from.y) / len;
+  const body = new Set(bodyHexes(center));
   const out: HexKey[] = [];
-  for (const d of [dir + 5, dir, dir + 1]) {
-    const v = DIRS[d % 6];
-    for (let k = 2; k <= 4; k++) out.push(key(add(c, scale(v, k))));
+  for (let t = 0.5; t < 40; t += 0.2) {
+    const h = fromPixel(from.x + ux * t, from.y + uy * t);
+    const k = key(h);
+    if (body.has(k)) continue;
+    if (!inBoard(h)) break;
+    if (!out.includes(k)) out.push(k);
   }
-  return out.filter((k) => inBoard(parse(k)));
+  return out;
 }
 
-/** Line Burst: one straight 5-hex line starting next to the body. */
-export function lineBurstHexes(center: HexKey, dir: Dir): HexKey[] {
-  const c = parse(center);
-  const out: HexKey[] = [];
-  for (let k = 2; k <= 6; k++) out.push(key(add(c, scale(DIRS[dir], k))));
-  return out.filter((k) => inBoard(parse(k)));
+/** Ring Slam: every hex 2 or 3 away from the body. */
+export const ringSlamHexes = (center: HexKey): HexKey[] => [...bodyRing(center, 2), ...bodyRing(center, 3)];
+
+/** Quick Swipe: the chosen adjacent hex and its two neighbours along the adjacent ring. */
+export function swipeHexes(center: HexKey, target: HexKey): HexKey[] {
+  const adj = new Set(bodyRing(center, 1));
+  return [target, ...neighbors(target).filter((n) => adj.has(n))];
 }
 
-/** Ring Slam: every hex at distance 2 from the Colossus body. */
-export const ringSlamHexes = (center: HexKey): HexKey[] => bodyRing(center, 2);
+/** Body Thrash: a body hex alone (to hit climbers), or a ground hex plus its ground neighbours. */
+export function thrashHexes(center: HexKey, target: HexKey): HexKey[] {
+  const body = new Set(bodyHexes(center));
+  if (body.has(target)) return [target];
+  return [target, ...neighbors(target).filter((n) => inBoard(parse(n)) && !body.has(n))];
+}
 
-/** Tail Sweep: the adjacent ring hexes at 90 degrees or more from the facing (7 of 12). */
+/** Tail Sweep: the two rings around the body, back half (90 degrees or more from the facing). */
 export function tailSweepHexes(center: HexKey, facing: Dir): HexKey[] {
   const c = parse(center);
   const f = toPixel(DIRS[facing]);
-  return ring(c, 2)
+  const o = toPixel(c);
+  return [...ring(c, 2), ...ring(c, 3)]
     .filter((h) => {
       const p = toPixel(h);
-      const o = toPixel(c);
       return (p.x - o.x) * f.x + (p.y - o.y) * f.y <= 1e-6;
     })
     .filter(inBoard)
     .map(key);
 }
 
-// ---------------------------------------------------------------- occupancy
+// ---------------------------------------------------------------- Colossus movement
 
-export function hunterAt(s: GameState, h: HexKey, except?: number): HunterState | undefined {
-  return s.hunters.find((x) => x.seat !== except && !x.exhausted && x.pos === h);
+const fitsOnBoard = (center: HexKey) => bodyHexes(center).every((h) => inBoard(parse(h)));
+
+/**
+ * Centre positions the Colossus passes through walking toward a pixel point: each step goes to the
+ * neighbouring centre closest to the point, as long as it heads within 45 degrees of the point, gets
+ * closer, and keeps the whole body on the board. (So a charge stops at the edge instead of sliding along it.)
+ */
+function walkToward(center: HexKey, point: { x: number; y: number }, maxSteps: number): HexKey[] {
+  const path: HexKey[] = [];
+  let cur = center;
+  const d2 = (k: HexKey) => {
+    const p = toPixel(parse(k));
+    return (p.x - point.x) ** 2 + (p.y - point.y) ** 2;
+  };
+  for (let i = 0; i < maxSteps; i++) {
+    let best: HexKey | null = null;
+    const here = toPixel(parse(cur));
+    const heading = Math.atan2(point.y - here.y, point.x - here.x);
+    for (const d of ALL_DIRS) {
+      const n = key(add(parse(cur), DIRS[d]));
+      const v = toPixel(DIRS[d]);
+      if (angleDiff(Math.atan2(v.y, v.x), heading) > Math.PI / 4 + 1e-6) continue;
+      if (!fitsOnBoard(n) || d2(n) >= d2(cur) - 1e-9) continue;
+      if (!best || d2(n) < d2(best)) best = n;
+    }
+    if (!best) break;
+    path.push(best);
+    cur = best;
+  }
+  return path;
 }
 
+/** Stride: up to `steps` hexes toward the aimed hex. */
+export function stridePath(center: HexKey, aim: HexKey, steps = 2): HexKey[] {
+  return walkToward(center, toPixel(parse(aim)), steps);
+}
+
+/** Charge Forward: straight toward the aim and beyond, until the body reaches the edge. */
+export function chargePath(center: HexKey, aim: HexKey): HexKey[] {
+  if (aim === center) return [];
+  const a = toPixel(parse(center));
+  const b = toPixel(parse(aim));
+  const far = { x: a.x + (b.x - a.x) * 50, y: a.y + (b.y - a.y) * 50 };
+  return walkToward(center, far, 30);
+}
+
+/** Every ground hex the body passes over along a path (excluding where it started). */
+export function sweepOf(center: HexKey, path: HexKey[]): HexKey[] {
+  const start = new Set(bodyHexes(center));
+  const swept = new Set<HexKey>();
+  for (const c of path) for (const h of bodyHexes(c)) if (!start.has(h)) swept.add(h);
+  return [...swept];
+}
+
+/** Facing after moving toward a hex. */
+export const facingToward = (center: HexKey, h: HexKey): Dir => bearing(parse(center), parse(h));
+
+/** Translate a hex by the movement of the Colossus (climbers ride along). */
+export function shiftBy(h: HexKey, from: HexKey, to: HexKey): HexKey {
+  const a = parse(from);
+  const b = parse(to);
+  const p = parse(h);
+  return key({ q: p.q + b.q - a.q, r: p.r + b.r - a.r });
+}
+
+// ---------------------------------------------------------------- occupancy
+
+/** A Hunter standing on this ground hex (climbers stand on the body and do not block the ground). */
+export function hunterAt(s: GameState, h: HexKey, except?: number): HunterState | undefined {
+  return s.hunters.find((x) => x.seat !== except && !x.climbing && x.pos === h);
+}
+
+/** A ground hex a Hunter may end on. */
 export function isFree(s: GameState, h: HexKey, except?: number): boolean {
   return inBoard(parse(h)) && !bodySet(s).has(h) && !hunterAt(s, h, except);
 }
 
 // ---------------------------------------------------------------- Hunter movement
 
-/** Hexes a movement card can reach from `from` (always includes `from` itself: a 0-hex move). */
+/**
+ * Hexes a movement card can reach from `from` (always includes `from`: a 0-hex move).
+ * On the ground the body blocks. A climber (standing on the body) walks across body hexes
+ * and may step down onto the ground.
+ */
 export function reachable(s: GameState, cardId: string, from: HexKey): Set<HexKey> {
   const def = hunterDef(cardId);
   const out = new Set<HexKey>([from]);
   if (!def.move) return out;
   const body = bodySet(s);
+  const onBody = body.has(from);
   const center = s.colossus.center;
   if (def.move.kind === 'vault') {
-    if (distToBody(center, from) <= 2) for (const h of bodyRing(center, 1)) out.add(h);
+    if (onBody || distToBody(center, from) <= 2) for (const h of bodyRing(center, 1)) out.add(h);
     return out;
   }
   if (def.move.kind === 'grapple') {
     const f = parse(from);
-    for (const h of ALL_HEXES) if (!body.has(h) && distance(f, parse(h)) <= def.move.range) out.add(h);
+    for (const h of ALL_HEXES) if ((onBody || !body.has(h)) && distance(f, parse(h)) <= def.move.range) out.add(h);
     return out;
   }
-  // Walk: BFS around the body. Allies never block passage (they only block the final hex).
   let frontier = [from];
   for (let step = 0; step < def.move.range; step++) {
     const next: HexKey[] = [];
     for (const h of frontier) {
       for (const n of neighbors(h)) {
-        if (out.has(n) || body.has(n) || !inBoard(parse(n))) continue;
+        if (out.has(n) || !inBoard(parse(n))) continue;
+        if (body.has(n) && !onBody) continue;
         out.add(n);
         next.push(n);
       }
@@ -130,15 +240,18 @@ export function reachable(s: GameState, cardId: string, from: HexKey): Set<HexKe
 /**
  * Where a Hunter actually ends a move: the chosen hex if it is reachable and free,
  * otherwise the free reachable hex closest to it (ties: closer to the start, then board order).
+ * Body hexes are always free (climbers may share them).
  */
 export function resolveMoveDest(s: GameState, seat: number, cardId: string, from: HexKey, dest: HexKey | undefined): HexKey {
   if (!dest) return from;
   const reach = reachable(s, cardId, from);
-  if (reach.has(dest) && isFree(s, dest, seat)) return dest;
+  const body = bodySet(s);
+  const ok = (h: HexKey) => body.has(h) || isFree(s, h, seat);
+  if (reach.has(dest) && ok(dest)) return dest;
   let best = from;
   let bestScore = [dist2(from, dest), 0, -1];
-  for (const h of ALL_HEXES) {
-    if (!reach.has(h) || !isFree(s, h, seat)) continue;
+  for (const h of reach) {
+    if (!ok(h)) continue;
     const score = [dist2(h, dest), dist2(h, from), ALL_HEXES.indexOf(h)];
     if (lexLess(score, bestScore)) {
       best = h;
@@ -154,11 +267,12 @@ function lexLess(a: number[], b: number[]): boolean {
   return false;
 }
 
-/** Push a Hunter `n` hexes directly away from the Colossus. Stops at edges, bodies and other figures. */
+/** Push a ground Hunter `n` hexes directly away from the Colossus. Stops at edges, the body and other figures. */
 export function pushAway(s: GameState, h: HunterState, n: number): number {
+  if (h.climbing) return 0;
   let moved = 0;
   const c = toPixel(parse(s.colossus.center));
-  for (let i = 0; i < n && h.pos; i++) {
+  for (let i = 0; i < n; i++) {
     const cur = h.pos;
     const curD = dist2(cur, s.colossus.center);
     let best: HexKey | null = null;
@@ -179,10 +293,11 @@ export function pushAway(s: GameState, h: HunterState, n: number): number {
   return moved;
 }
 
-/** Pull a Hunter up to `n` hexes toward `toward`, stopping once adjacent. */
+/** Pull a ground Hunter up to `n` hexes toward `toward`, stopping once adjacent. */
 export function pullToward(s: GameState, h: HunterState, toward: HexKey, n: number): number {
+  if (h.climbing) return 0;
   let moved = 0;
-  for (let i = 0; i < n && h.pos; i++) {
+  for (let i = 0; i < n; i++) {
     const curD = dist2(h.pos, toward);
     if (curD <= 1) break;
     let best: HexKey | null = null;
@@ -203,7 +318,7 @@ export function pullToward(s: GameState, h: HunterState, toward: HexKey, n: numb
 }
 
 /** Nearest free ground hex to `from` that is not in `forbidden` (BFS, deterministic). */
-export function nearestFree(s: GameState, from: HexKey, forbidden: Set<HexKey>, seat?: number): HexKey | null {
+export function nearestFree(s: GameState, from: HexKey, forbidden: Set<HexKey>, seat?: number): HexKey {
   const seen = new Set([from]);
   let frontier = [from];
   while (frontier.length) {
@@ -218,55 +333,12 @@ export function nearestFree(s: GameState, from: HexKey, forbidden: Set<HexKey>, 
     }
     frontier = next;
   }
-  return null;
+  return from;
 }
 
-// ---------------------------------------------------------------- Charge Forward
-
-/** Centre positions the Colossus passes through when surging to the board edge. */
-export function chargePath(center: HexKey, dir: Dir): HexKey[] {
-  const path: HexKey[] = [];
-  let c = parse(center);
-  for (;;) {
-    const n = add(c, DIRS[dir]);
-    if (!bodyHexes(key(n)).every((h) => inBoard(parse(h)))) break;
-    path.push(key(n));
-    c = n;
-  }
-  return path;
+/** The body hex a Hunter climbs onto: the one next to them, closest to the core on ties. */
+export function mountHex(s: GameState, from: HexKey): HexKey {
+  const body = bodyHexes(s.colossus.center);
+  const touching = body.filter((b) => dist2(b, from) === 1);
+  return touching[0] ?? body[1];
 }
-
-/** Every ground hex the body sweeps through during a charge (excluding where it started). */
-export function chargeSweep(center: HexKey, dir: Dir): HexKey[] {
-  const start = new Set(bodyHexes(center));
-  const swept = new Set<HexKey>();
-  for (const c of chargePath(center, dir)) for (const h of bodyHexes(c)) if (!start.has(h)) swept.add(h);
-  return [...swept];
-}
-
-/** Facing that points from the Colossus toward a hex. */
-export const facingToward = (center: HexKey, h: HexKey): Dir => bearing(parse(center), parse(h));
-
-// ---------------------------------------------------------------- body board
-
-export const NODES: readonly NodeId[] = ['L1', 'L2', 'B1', 'B2', 'H1', 'H2'];
-export const LEGS: readonly NodeId[] = ['L1', 'L2'];
-export const NODE_POINTS: Record<NodeId, number> = { L1: 0, L2: 0, B1: 1, B2: 1, H1: 2, H2: 2 };
-export const NODE_NAMES: Record<NodeId, string> = {
-  L1: 'Left Leg',
-  L2: 'Right Leg',
-  B1: 'Left Back',
-  B2: 'Right Back',
-  H1: 'Left Head',
-  H2: 'Right Head',
-};
-/** A ladder: each node links to its tier partner and the node above/below it. */
-export const NODE_LINKS: Record<NodeId, NodeId[]> = {
-  L1: ['L2', 'B1'],
-  L2: ['L1', 'B2'],
-  B1: ['B2', 'L1', 'H1'],
-  B2: ['B1', 'L2', 'H2'],
-  H1: ['H2', 'B1'],
-  H2: ['H1', 'B2'],
-};
-export const isNodeId = (x: unknown): x is NodeId => typeof x === 'string' && (NODES as readonly string[]).includes(x);

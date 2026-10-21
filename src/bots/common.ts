@@ -5,13 +5,12 @@ import {
   BOSS_DECK,
   bodyRing,
   cardType,
-  chargeSweep,
+  chargedZone,
   dieAverage,
   distToBody,
   hunterDef,
   isRestCard,
   reachable,
-  tailSweepHexes,
   type GameState,
   type HexKey,
   type HunterState,
@@ -69,13 +68,7 @@ export function analyzeThreats(s: GameState): Threats {
   const nextCubes = new Set<HexKey>();
   for (const w of s.cubes) for (const h of w.hexes) (w.round < s.round ? detonating : nextCubes).add(h);
   const charged = new Set<HexKey>();
-  for (const p of s.pendingCharged) {
-    const hexes =
-      cardType(p.card) === 'chargeForward' && p.dir !== undefined
-        ? chargeSweep(s.colossus.center, p.dir)
-        : tailSweepHexes(s.colossus.center, s.colossus.facing);
-    for (const h of hexes) charged.add(h);
-  }
+  for (const p of s.pendingCharged) for (const h of chargedZone(s, p)) charged.add(h);
   return { detonating, nextCubes, charged, adjacent: new Set(bodyRing(s.colossus.center, 1)) };
 }
 

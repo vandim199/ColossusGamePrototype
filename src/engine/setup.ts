@@ -7,7 +7,6 @@ export const HUNTER_HP = 12;
 export const HUNTER_MAX_HP_CAP = 14;
 export const ARMOR_PER_HUNTER = 4;
 export const ARMOR_PER_POINT = 2;
-export const START_GRIP = 6;
 
 export const COLOSSUS_START: HexKey = key(fromOffset(4, 4));
 /** Hunters start along the bottom edge, facing the Colossus. */
@@ -53,11 +52,10 @@ export function createGame(opts: NewGameOptions): GameState {
     hp: HUNTER_HP,
     maxHp: HUNTER_HP,
     pos: key(fromOffset(HUNTER_START_COLS[n][i], 9)),
-    node: null,
-    grip: 0,
+    climbing: false,
+    mountedRound: null,
     hand: [...CLASSES[cls].deck],
     discard: [],
-    burned: [],
     dice: [...CLASSES[cls].dice],
     upgrades: 0,
     momentum: 0,
@@ -66,10 +64,8 @@ export function createGame(opts: NewGameOptions): GameState {
     shield: 0,
     down: false,
     revived: false,
-    exhausted: false,
     attackedThisRound: false,
     damagedThisRound: false,
-    mountedRound: null,
   }));
 
   const state: GameState = {
@@ -90,7 +86,7 @@ export function createGame(opts: NewGameOptions): GameState {
     cubes: [],
     points: 0,
     target: strikesToWin(opts.mode),
-    spentNodes: [],
+    burst: 0,
     ragePile: rage,
     tumble: null,
     pendingCharged: [],
@@ -113,13 +109,15 @@ export function createGame(opts: NewGameOptions): GameState {
       feintCatches: 0,
       shortTumbles: 0,
       shatters: 0,
-      exhaustions: 0,
       downs: 0,
       revives: 0,
-      falls: 0,
+      climbs: 0,
+      shakeOffs: 0,
+      bursts: 0,
       hunterRests: 0,
       superRests: 0,
       bossRests: 0,
+      bossMoves: 0,
       pointRounds: [],
       climbLengths: [],
       armorDamage: 0,
