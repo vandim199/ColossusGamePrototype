@@ -215,3 +215,38 @@ h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; letter-sp
 }
 .hurt-flash { animation: flash 0.5s ease-out; }
 @keyframes flash { from { opacity: 0.9; } to { opacity: 0; } }
+
+/* ------------------------------------------------ dice tray (every client replays the same rolls) */
+.dice-tray {
+  /* Beside the board when there is room; otherwise floating over the board's bottom edge for the moment of the roll. */
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5; min-width: 220px; max-width: calc(100% - 24px);
+  background: linear-gradient(180deg, #fbf4e2, #efe0bd); border: 3px double var(--leather); border-radius: 12px;
+  padding: 8px 14px 10px; box-shadow: 0 6px 18px rgba(60, 40, 15, 0.3);
+  text-align: center; animation: traydrop 0.25s ease-out; pointer-events: none;
+}
+@keyframes traydrop { from { opacity: 0; } }
+@media (min-width: 1280px) {
+  .dice-tray { bottom: auto; top: 12px; left: 12px; transform: none; width: 250px; min-width: 0; }
+}
+@media (max-width: 900px) {
+  .dice-tray .die { width: 34px; height: 34px; }
+}
+.dice-title { display: flex; gap: 6px; align-items: center; justify-content: center; font-family: var(--display); font-size: 14px; color: var(--leather); }
+.dice-row { display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; margin: 6px 0 2px; }
+.dice-bonus { font-family: var(--display); font-weight: 700; font-size: 20px; color: var(--leather); }
+.dice-total { font-family: var(--display); font-size: 16px; color: var(--muted); min-height: 22px; }
+.dice-total.shown { color: var(--accent); font-size: 20px; animation: pop 0.3s ease-out; }
+.die { filter: drop-shadow(0 2px 2px rgba(40, 25, 10, 0.4)); }
+.die.rolling { animation: tumble 0.32s linear infinite; }
+.die.landed { animation: land 0.35s cubic-bezier(0.3, 1.6, 0.5, 1); }
+@keyframes tumble {
+  0% { transform: translateY(0) rotate(0deg); }
+  25% { transform: translateY(-7px) rotate(90deg); }
+  50% { transform: translateY(0) rotate(180deg); }
+  75% { transform: translateY(-4px) rotate(270deg); }
+  100% { transform: translateY(0) rotate(360deg); }
+}
+@keyframes land { from { transform: scale(1.35); } to { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .die.rolling, .die.landed, .dice-tray, .mover, .shake, .shake-big { animation: none; transition: none; }
+}

@@ -139,6 +139,21 @@ export interface RevealRecord {
 
 export type Step = 'setup' | 'lock' | 'reveal' | '3.1' | '3.2' | '3.3' | '3.4' | '3.5' | 'cleanup' | 'end';
 
+/** A visible dice roll, so every client can animate the same result. */
+export interface DiceRoll {
+  /** Seat that rolled. */
+  seat: number;
+  /** What was rolled for ("Arrow Volley", "Rescue Beam"). */
+  label: string;
+  kinds: DieKind[];
+  faces: number[];
+  /** Flat amount added to the dice (Sledge Shatter's +3). */
+  bonus: number;
+  /** Final result after halving, if any. */
+  total: number;
+  halved: boolean;
+}
+
 /** Where everything stands right after a log event, so the UI can replay a round step by step. */
 export interface Snapshot {
   center: HexKey;
@@ -157,6 +172,8 @@ export interface LogEvent {
   hexes?: HexKey[];
   /** The Colossus took a hit (the UI shakes it). */
   bossHit?: boolean;
+  /** Present when this event is a dice roll. */
+  dice?: DiceRoll;
   snap?: Snapshot;
 }
 
