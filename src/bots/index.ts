@@ -5,7 +5,7 @@ import { hunterBotAction } from './hunterBot';
 
 export * from './common';
 export { colossusBotPlays, fallbackBossPlays } from './colossusBot';
-export { hunterBotAction, fallbackHunterAction, chooseBurn } from './hunterBot';
+export { hunterBotAction, fallbackHunterAction } from './hunterBot';
 
 /**
  * Colossus bot turn: choose plays from the Colossus's own view and wrap them in

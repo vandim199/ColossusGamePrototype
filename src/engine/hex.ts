@@ -76,6 +76,35 @@ export function toPixel(h: Hex, size = 1): { x: number; y: number } {
   return { x: size * 1.5 * h.q, y: size * Math.sqrt(3) * (h.r + h.q / 2) };
 }
 
+/** Nearest hex to a pixel position (inverse of toPixel, cube rounding). */
+export function fromPixel(x: number, y: number, size = 1): Hex {
+  const qf = ((2 / 3) * x) / size;
+  const rf = ((-1 / 3) * x + (Math.sqrt(3) / 3) * y) / size;
+  const sf = -qf - rf;
+  let q = Math.round(qf);
+  let r = Math.round(rf);
+  const s = Math.round(sf);
+  const dq = Math.abs(q - qf);
+  const dr = Math.abs(r - rf);
+  const ds = Math.abs(s - sf);
+  if (dq > dr && dq > ds) q = -r - s;
+  else if (dr > ds) r = -q - s;
+  return { q, r };
+}
+
+/** Angle in radians of the line from one hex to another (screen coordinates, y down). */
+export function angleBetween(from: Hex, to: Hex): number {
+  const a = toPixel(from);
+  const b = toPixel(to);
+  return Math.atan2(b.y - a.y, b.x - a.x);
+}
+
+/** Smallest absolute difference between two angles. */
+export function angleDiff(a: number, b: number): number {
+  const d = Math.abs(a - b) % (2 * Math.PI);
+  return d > Math.PI ? 2 * Math.PI - d : d;
+}
+
 /** Hexes at exactly distance `radius` from `center`, clockwise, starting at the N corner. */
 export function ring(center: Hex, radius: number): Hex[] {
   if (radius === 0) return [center];

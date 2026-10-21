@@ -19,5 +19,7 @@ export function projectView(s: GameState, viewer: Viewer): GameState {
   if (viewer !== 0) v.colossus.hand = v.colossus.hand.map(() => HIDDEN_CARD);
   const hunterViewer = typeof viewer === 'number' && viewer >= 1;
   if (!hunterViewer) v.commits = v.commits.map((c) => (c ? { kind: 'hidden' } : null));
+  // Replay snapshots are only needed for the latest reveal; drop the rest to keep messages small.
+  for (const e of v.log) if (e.round < s.round - 1) delete e.snap;
   return v;
 }

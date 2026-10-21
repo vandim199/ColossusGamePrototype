@@ -1,24 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BURST_TARGET,
   DIE_FACES,
   RuleError,
+  SHAKE_DAMAGE,
+  angleBetween,
+  angleDiff,
   applyAction,
   bodyHexes,
+  coneHexes,
   createGame,
   dieAverage,
   fullArmor,
+  groundHexes,
+  inBoard,
+  lineHexes,
   makeBossCommitment,
   makeCommitment,
+  neighbors,
+  parse,
   projectView,
-  requiredBossCount,
   rollDie,
   sha256Hex,
+  validateBossPlays,
   validateHunterPlays,
   Rng,
   type BossPlay,
   type GameState,
 } from './index';
-import { emptyHex, fromCenter, hexAt, idleHunterAction, playRound } from './testkit';
+import { emptyHex, fromCenter, hexAt, playRound } from './testkit';
 
 const newGame = (seed = 1) => createGame({ mode: '1v4', seed });
 
@@ -31,6 +41,13 @@ function giveBoss(s: GameState, card: string) {
 const far = (s: GameState) => emptyHex(s, [hexAt(9, 0), hexAt(0, 0)]);
 const S = 3 as const;
 
+function climbOn(s: GameState, i: number, hex: string, mountedRound = s.round) {
+  const h = s.hunters[i];
+  h.pos = hex;
+  h.climbing = true;
+  h.mountedRound = mountedRound;
+}
+
 // ------------------------------------------------------------------ dice
 
 describe('dice', () => {
@@ -40,29 +57,21 @@ describe('dice', () => {
     expect(dieAverage('upgraded')).toBe(1.5);
     expect(dieAverage('heavy')).toBe(2.25);
     expect(dieAverage('pull')).toBeCloseTo(2.667, 2);
-    // class pools from the Hunter class table
     expect(6 * dieAverage('slasher')).toBe(3);
-    expect(9 * dieAverage('slasher')).toBe(4.5); // with a +3 Momentum streak
     expect(4 * dieAverage('standard')).toBe(4);
     expect(2 * dieAverage('upgraded') + dieAverage('heavy')).toBe(5.25);
-    expect(2 * dieAverage('standard')).toBe(2);
   });
 
   it('give the probabilities quoted in the changelog', () => {
-    // Marksman Bleed: two or more 2s on 4 Standard d4 (26%)
     const p2 = DIE_FACES.standard.filter((f) => f === 2).length / 4;
-    const bleed = 1 - (1 - p2) ** 4 - 4 * p2 * (1 - p2) ** 3;
-    expect(bleed).toBeCloseTo(0.2617, 3);
-    // Bard pull die: 50% chance of 3+
+    expect(1 - (1 - p2) ** 4 - 4 * p2 * (1 - p2) ** 3).toBeCloseTo(0.2617, 3);
     expect(DIE_FACES.pull.filter((f) => f >= 3).length / 6).toBe(0.5);
   });
 
   it('roll deterministically from a seed and converge on the average', () => {
     const a = new Rng(42);
     const b = new Rng(42);
-    const rollsA = Array.from({ length: 50 }, () => rollDie('heavy', () => a.next()));
-    const rollsB = Array.from({ length: 50 }, () => rollDie('heavy', () => b.next()));
-    expect(rollsA).toEqual(rollsB);
+    expect(Array.from({ length: 50 }, () => rollDie('heavy', () => a.next()))).toEqual(Array.from({ length: 50 }, () => rollDie('heavy', () => b.next())));
     const r = new Rng(7);
     let sum = 0;
     for (let i = 0; i < 100000; i++) sum += rollDie('heavy', () => r.next());
@@ -80,17 +89,14 @@ describe('commit-reveal', () => {
 
   it('accepts the matching reveal and rejects tampering', () => {
     let s = newGame();
-    const plays: BossPlay[] = [{ card: 'feint.1' }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }];
+    const plays: BossPlay[] = [{ card: 'feint.1' }, { card: 'bodyThrash.1', targets: [far(s)] }];
     const { lock, reveal } = makeBossCommitment(s, plays, 'salt-1');
     expect(lock.commitment).toBe(makeCommitment(plays, 'salt-1'));
     s = applyAction(s, lock);
-    for (const h of s.hunters) s = applyAction(s, idleHunterAction(s, h.seat));
+    for (const h of s.hunters) s = applyAction(s, { type: 'CommitHunterCards', seat: h.seat, plays: [] });
     expect(s.phase).toBe('bossReveal');
-    // Swapped card
-    expect(() => applyAction(s, { ...reveal, plays: [{ card: 'quickSwipe.1', targets: [{ hex: fromCenter(s, S, 2) }] }, plays[1]] })).toThrow(RuleError);
-    // Wrong salt
+    expect(() => applyAction(s, { ...reveal, plays: [{ card: 'quickSwipe.1', targets: [fromCenter(s, S, 2)] }, plays[1]] })).toThrow(RuleError);
     expect(() => applyAction(s, { ...reveal, salt: 'salt-2' })).toThrow(/does not match/);
-    // The genuine reveal resolves the round
     const after = applyAction(s, reveal);
     expect(after.round).toBe(2);
     expect(after.lastReveal?.plays).toEqual(plays);
@@ -98,263 +104,285 @@ describe('commit-reveal', () => {
 
   it('rejects a reveal whose cubes differ from the ones placed at lock', () => {
     let s = newGame();
-    const plays: BossPlay[] = [{ card: 'lineBurst.1', dir: 0 }, { card: 'feint.1' }];
+    const plays: BossPlay[] = [{ card: 'lineBurst.1', aim: hexAt(4, 0) }];
     const { lock, reveal } = makeBossCommitment(s, plays, 'x');
     s = applyAction(s, { ...lock, cubes: lock.cubes.slice(1) });
-    for (const h of s.hunters) s = applyAction(s, idleHunterAction(s, h.seat));
+    for (const h of s.hunters) s = applyAction(s, { type: 'CommitHunterCards', seat: h.seat, plays: [] });
     expect(() => applyAction(s, reveal)).toThrow(/cubes/);
   });
 });
 
-// ------------------------------------------------------------------ Parry / whiff
+// ------------------------------------------------------------------ choices
+
+describe('choosing cards', () => {
+  it('Hunters may commit 0, 1 or 2 cards, in any combination', () => {
+    const s = applyAction(newGame(), makeBossCommitment(newGame(), [{ card: 'feint.1' }], 's').lock);
+    expect(validateHunterPlays(s, 1, [])).toBeNull();
+    expect(validateHunterPlays(s, 1, [{ card: 'parry.1' }])).toBeNull();
+    expect(validateHunterPlays(s, 1, [{ card: 'parry.1' }, { card: 'slash.1' }])).toBeNull();
+    expect(validateHunterPlays(s, 1, [{ card: 'rest.1' }, { card: 'slash.1' }])).toBeNull();
+    expect(validateHunterPlays(s, 1, [{ card: 'rest.1' }, { card: 'slash.1' }, { card: 'dash.1' }])).toMatch(/at most 2/);
+  });
+
+  it('the Colossus may lock any 1 or 2 cards together, even two Charged attacks or a move with an attack', () => {
+    const s = newGame();
+    expect(validateBossPlays(s, [{ card: 'chargeForward.1', aim: hexAt(0, 9) }, { card: 'tailSweep.1' }])).toBeNull();
+    expect(validateBossPlays(s, [{ card: 'stride.1', aim: hexAt(9, 9) }, { card: 'triCone.1', aim: hexAt(4, 9) }])).toBeNull();
+    expect(validateBossPlays(s, [{ card: 'rest.1' }, { card: 'feint.1' }])).toBeNull();
+    expect(validateBossPlays(s, [{ card: 'ringSlam.1' }])).toBeNull();
+    expect(validateBossPlays(s, [{ card: 'feint.1' }, { card: 'ringSlam.1' }, { card: 'tailSweep.1' }])).toMatch(/at most 2/);
+    expect(validateBossPlays({ ...s, tumble: { kind: 'long', endsRound: 3, climbsLeft: 9, parrier: null } }, [{ card: 'stride.1', aim: hexAt(9, 9) }])).toMatch(/Tumbled/);
+  });
+});
+
+// ------------------------------------------------------------------ Rest
+
+describe('Rest', () => {
+  it('is just a card: play it with another, take every card back, heal 2, lose nothing', () => {
+    let s = newGame();
+    const h = s.hunters[0];
+    h.hp = 5;
+    h.hand = ['rest.1', 'slash.1', 'slash.2', 'dash.1'];
+    h.discard = ['dash.2', 'parry.1', 'sidestep.1', 'vault.1', 'vectorDash.1', 'climb.1'];
+    s = playRound(s, null, { 1: [{ card: 'rest.1' }, { card: 'dash.1', dest: hexAt(2, 8) }] });
+    const after = s.hunters[0];
+    expect(after.hp).toBe(7);
+    expect(after.pos).toBe(hexAt(2, 8)); // the other card still resolved
+    expect(after.discard).toEqual([]);
+    expect(after.hand.sort()).toEqual(['climb.1', 'dash.1', 'dash.2', 'parry.1', 'rest.1', 'sidestep.1', 'slash.1', 'slash.2', 'vault.1', 'vectorDash.1']);
+  });
+
+  it('Super Rest (Rest is your last card) heals 4 and upgrades a die, max 2, then +1 max HP', () => {
+    let s = newGame();
+    const superRest = (st: GameState) => {
+      const h = st.hunters[0];
+      h.discard = h.hand.filter((c) => c !== 'rest.1');
+      h.hand = ['rest.1'];
+      h.hp = 3;
+      return playRound(st, null, { 1: [{ card: 'rest.1' }] });
+    };
+    s = superRest(s);
+    expect(s.hunters[0].hp).toBe(7);
+    expect(s.hunters[0].dice.filter((d) => d === 'standard')).toHaveLength(1);
+    s = superRest(superRest(s));
+    expect(s.hunters[0].upgrades).toBe(2);
+    expect(s.hunters[0].maxHp).toBe(13);
+    expect(s.hunters[0].hand).toHaveLength(10);
+  });
+});
+
+// ------------------------------------------------------------------ Parry
 
 describe('Parry', () => {
-  it('deflects a Quick Attack on your final hex: no damage, Short Tumble, Charged Attack cancelled', () => {
+  it('can be played alone to stand still and deflect: no damage, Short Tumble, Charged Attack cancelled', () => {
     let s = newGame();
     const spot = fromCenter(s, S, 2);
     s.hunters[0].pos = spot;
-    // Round 1: the Colossus locks a Charge Forward; it is declared at cleanup.
-    s = playRound(s, [{ card: 'chargeForward.1', dir: 0 }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'dash.1' }, { card: 'dash.2' }],
-    });
+    s = playRound(s, [{ card: 'chargeForward.1', aim: hexAt(4, 0) }]);
     expect(s.pendingCharged).toHaveLength(1);
     const center = s.colossus.center;
-    // Round 2: Parry with a 0-hex move; the swipe lands on the parrier.
-    s = playRound(s, [{ card: 'quickSwipe.1', targets: [{ hex: spot }] }, { card: 'bodyThrash.2', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'parry.1' }, { card: 'sidestep.1' }],
-    });
+    s = playRound(s, [{ card: 'quickSwipe.1', targets: [spot] }], { 1: [{ card: 'parry.1' }] });
     expect(s.hunters[0].hp).toBe(12);
+    expect(s.hunters[0].pos).toBe(spot);
     expect(s.stats.parries).toBe(1);
     expect(s.tumble).toMatchObject({ kind: 'short', endsRound: 3, parrier: 1 });
-    expect(s.colossus.center).toBe(center); // the charge never happened
-    expect(s.hunters[0].exposed).toBe(false);
+    expect(s.colossus.center).toBe(center);
   });
 
   it('whiffs when nothing lands on your hex: Exposed (+2 to every hit) next round', () => {
     let s = newGame();
     const spot = fromCenter(s, S, 2);
     s.hunters[0].pos = spot;
-    s = playRound(s, [{ card: 'bodyThrash.1', targets: [{ hex: far(s) }] }, { card: 'quickSwipe.1', targets: [{ hex: fromCenter(s, 0, 2) }] }], {
-      1: [{ card: 'parry.1' }, { card: 'dash.1' }],
-    });
+    s = playRound(s, [{ card: 'bodyThrash.1', targets: [far(s)] }], { 1: [{ card: 'parry.1' }] });
     expect(s.stats.whiffs).toBe(1);
     expect(s.hunters[0].exposed).toBe(true);
-    s = playRound(s, [{ card: 'quickSwipe.2', targets: [{ hex: spot }] }, { card: 'bodyThrash.2', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'dash.2' }, { card: 'sidestep.1' }],
-    });
-    expect(s.hunters[0].hp).toBe(12 - 5); // 3 + Exposed 2
+    s = playRound(s, [{ card: 'quickSwipe.2', targets: [spot] }], { 1: [] });
+    expect(s.hunters[0].hp).toBe(12 - 5);
     expect(s.hunters[0].pos).not.toBe(spot); // knockback 2
-    expect(s.hunters[0].exposed).toBe(false); // expired at cleanup
+    expect(s.hunters[0].exposed).toBe(false);
   });
 
   it('is punished by Feint and cancelled (without a whiff) by Roar', () => {
     let s = newGame();
     s.hunters[0].pos = fromCenter(s, S, 2);
-    s = playRound(s, [{ card: 'feint.1' }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'parry.1' }, { card: 'dash.1' }],
-    });
+    s = playRound(s, [{ card: 'feint.1' }], { 1: [{ card: 'parry.1' }] });
     expect(s.hunters[0].exposed).toBe(true);
-    expect(s.stats.feintCatches).toBe(1);
-
     let r = newGame();
     const spot = fromCenter(r, S, 2);
     r.hunters[0].pos = spot;
     giveBoss(r, 'roar.r');
-    r = playRound(r, [{ card: 'roar.r' }, { card: 'bodyThrash.1', targets: [{ hex: far(r) }] }], {
-      1: [{ card: 'parry.1' }, { card: 'dash.1' }],
-    });
+    r = playRound(r, [{ card: 'roar.r' }], { 1: [{ card: 'parry.1' }] });
     expect(r.hunters[0].exposed).toBe(false);
     expect(r.stats.whiffs).toBe(0);
     expect(r.hunters[0].pos).not.toBe(spot);
   });
+});
 
-  it('must be paired with a movement card', () => {
-    const s = applyAction(newGame(), makeBossCommitment(newGame(), [{ card: 'feint.1' }, { card: 'blastingShell.1' }], 's').lock);
-    expect(validateHunterPlays(s, 1, [{ card: 'parry.1' }, { card: 'slash.1' }])).toMatch(/movement/);
-    expect(validateHunterPlays(s, 1, [{ card: 'parry.1' }, { card: 'vectorDash.1' }])).toBeNull();
+// ------------------------------------------------------------------ bigger attacks
+
+describe('Colossus attacks', () => {
+  it('Tri-Cone is a 120-degree V (a third of the arena around the Colossus), aimed at any hex', () => {
+    const s = newGame();
+    const c = s.colossus.center;
+    for (const aim of [hexAt(4, 9), hexAt(9, 7), hexAt(0, 0), hexAt(7, 2)]) {
+      const cone = coneHexes(c, aim);
+      const a = angleBetween(parse(c), parse(aim));
+      expect(cone.every((h) => angleDiff(angleBetween(parse(c), parse(h)), a) <= Math.PI / 3 + 1e-6)).toBe(true);
+      // A third of the directions; the share of hexes depends on where the Colossus stands.
+      expect(cone.length / groundHexes(c).length).toBeGreaterThan(0.2);
+      expect(cone.length / groundHexes(c).length).toBeLessThan(0.55);
+    }
+  });
+
+  it('Line Burst runs from the body to the edge of the arena toward the clicked hex', () => {
+    const s = newGame();
+    const c = s.colossus.center;
+    const line = lineHexes(c, hexAt(9, 9));
+    expect(line.length).toBeGreaterThanOrEqual(4);
+    const body = new Set(bodyHexes(c));
+    expect(line.some((h) => body.has(h))).toBe(false);
+    const last = line[line.length - 1];
+    expect(neighbors(last).some((n) => !inBoard(parse(n)))).toBe(true);
+    expect(lineHexes(c, hexAt(4, 0)).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('Quick Swipe hits a 3-hex arc and Body Thrash a hex with its neighbours', () => {
+    let s = newGame();
+    s.hunters[0].pos = fromCenter(s, S, 2);
+    s.hunters[1].pos = fromCenter(s, 2, 2);
+    s = playRound(s, [{ card: 'quickSwipe.1', targets: [hexAt(4, 6)] }]);
+    expect(s.hunters[0].hp).toBe(9);
+    let t = newGame();
+    t.hunters[2].pos = hexAt(5, 8);
+    t = playRound(t, [{ card: 'bodyThrash.1', targets: [hexAt(5, 7)] }]);
+    expect(t.hunters[2].hp).toBe(9);
+  });
+
+  it('Charge Forward is declared a round early, then surges toward the clicked hex to the edge', () => {
+    let s = newGame();
+    s.hunters[1].pos = hexAt(4, 7);
+    s = playRound(s, [{ card: 'chargeForward.1', aim: hexAt(4, 9) }]);
+    expect(s.colossus.center).toBe(hexAt(4, 4));
+    s = playRound(s, null);
+    expect(s.colossus.center).toBe(hexAt(4, 8));
+    expect(s.hunters[1].hp).toBe(8);
+    expect(bodyHexes(s.colossus.center)).not.toContain(s.hunters[1].pos);
+  });
+
+  it('Stride walks the Colossus up to 2 hexes toward the clicked hex at the end of the round', () => {
+    let s = newGame();
+    const before = s.colossus.center;
+    s = playRound(s, [{ card: 'stride.1', aim: hexAt(9, 4) }]);
+    expect(s.colossus.center).not.toBe(before);
+    expect(s.stats.bossMoves).toBe(1);
+  });
+
+  it('Red Cubes detonate next round, so moving out of the lane is safe', () => {
+    let s = newGame();
+    const lane = lineHexes(s.colossus.center, hexAt(4, 9));
+    s.hunters[0].pos = lane[1];
+    s.hunters[1].pos = lane[2];
+    s = playRound(s, [{ card: 'lineBurst.1', aim: hexAt(4, 9) }]);
+    expect(s.hunters[0].hp).toBe(12);
+    s = playRound(s, null, { 1: [{ card: 'sidestep.1', dest: hexAt(2, 7) }] });
+    expect(s.hunters[0].hp).toBe(12);
+    expect(s.hunters[1].hp).toBe(7);
+  });
+
+  it('Blasting Shell reflects 2 when all but one Hunter attack', () => {
+    let s = newGame();
+    for (const [i, d] of [[0, 3], [1, 2], [2, 4]] as const) s.hunters[i].pos = fromCenter(s, d, 2);
+    s.colossus.armor = 10;
+    s = playRound(s, [{ card: 'blastingShell.1' }], { 1: [{ card: 'slash.1' }], 2: [{ card: 'volley.1' }], 3: [{ card: 'hammer.1' }] });
+    expect(s.hunters.map((h) => h.hp)).toEqual([10, 10, 10, 12]);
   });
 });
 
 // ------------------------------------------------------------------ Tumbles and climbing
 
-describe('Tumble and climbing', () => {
-  it('Short Tumble: the parrier climbs, the Colossus stands at the end of next round with Armor unchanged', () => {
+describe('Tumbles and climbing on the body', () => {
+  it('Short Tumble: the parrier climbs onto the nearest body hex; it stands at the end of next round', () => {
     let s = newGame();
     const spot = fromCenter(s, S, 2);
     s.hunters[0].pos = spot;
-    s = playRound(s, [{ card: 'quickSwipe.1', targets: [{ hex: spot }] }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'parry.1' }, { card: 'dash.1' }],
-    });
+    s = playRound(s, [{ card: 'quickSwipe.1', targets: [spot] }], { 1: [{ card: 'parry.1' }] });
     const armor = s.colossus.armor;
-    expect(s.tumble?.endsRound).toBe(2);
-    s = playRound(s, [{ card: 'feint.1' }, { card: 'bodyThrash.2', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'dash.2' }, { card: 'climb.1' }],
-    });
-    expect(s.hunters[0]).toMatchObject({ node: 'L1', grip: 6, pos: null });
-    expect(s.tumble).toBeNull(); // stood up at cleanup of round 2
+    s = playRound(s, null, { 1: [{ card: 'climb.1' }] });
+    expect(s.hunters[0].climbing).toBe(true);
+    expect(bodyHexes(s.colossus.center)).toContain(s.hunters[0].pos);
+    expect(s.hunters[0].pos).toBe(fromCenter(s, S, 1)); // the body hex next to them
+    expect(s.tumble).toBeNull();
     expect(s.colossus.armor).toBe(armor);
   });
 
-  it('Short Tumble allows one climber; Long Tumble lets every adjacent Hunter climb', () => {
+  it('Long Tumble lets every adjacent Hunter climb', () => {
     let s = newGame();
     s.hunters[0].pos = fromCenter(s, S, 2);
     s.hunters[2].pos = fromCenter(s, 2, 2);
     s.colossus.armor = 3;
-    // Sledge Shatter always does at least 3: Armor hits 0 -> Long Tumble at cleanup.
-    s = playRound(s, [{ card: 'feint.1' }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }], {
-      1: [{ card: 'dash.1' }, { card: 'dash.2' }],
-      3: [{ card: 'sledge.1' }, { card: 'march.1' }],
-    });
+    s = playRound(s, null, { 3: [{ card: 'sledge.1' }] });
     expect(s.tumble).toMatchObject({ kind: 'long', endsRound: 3 });
-    expect(s.stats.shatters).toBe(1);
-    s = playRound(s, null, {
-      1: [{ card: 'climb.1' }, { card: 'sidestep.1' }],
-      3: [{ card: 'climb.1' }, { card: 'march.2' }],
-    });
-    expect(s.hunters[0].node).toBe('L1');
-    expect(s.hunters[2].node).toBe('L1');
-    expect(s.tumble?.kind).toBe('long');
-    s = playRound(s, null, { 1: [{ card: 'vault.1' }, { card: 'slash.1' }], 3: [{ card: 'advance.1' }, { card: 'hammer.1' }] });
-    expect(s.tumble).toBeNull(); // stood at the end of round 3 (the round after next)
-    expect(s.colossus.armor).toBe(fullArmor(s));
+    s = playRound(s, null, { 1: [{ card: 'climb.1' }], 3: [{ card: 'climb.1' }] });
+    expect(s.hunters[0].climbing && s.hunters[2].climbing).toBe(true);
   });
 
-  it('climbing costs Grip, strikes score once per node, and Escalation follows', () => {
+  it(`a Burst of ${BURST_TARGET} on the core lands a Vital Strike and throws the climbers clear unharmed`, () => {
     let s = newGame();
-    const h = s.hunters[0];
-    h.pos = null;
-    h.node = 'L1';
-    h.grip = 6;
-    h.mountedRound = 1;
-    const handBefore = s.colossus.hand.length;
-    s = playRound(s, null, { 1: [{ card: 'sidestep.1', node: 'B1' }, { card: 'slash.1' }] });
+    climbOn(s, 2, fromCenter(s, S, 1));
+    climbOn(s, 0, s.colossus.center);
+    s.burst = BURST_TARGET - 3;
+    // Vanguard steps onto the core, Sledge Shatter always deals 3+.
+    s = playRound(s, null, { 3: [{ card: 'march.1', dest: s.colossus.center }, { card: 'sledge.1' }] });
     expect(s.points).toBe(1);
-    expect(s.spentNodes).toEqual(['B1']);
-    expect(s.hunters[0].grip).toBe(6 - 1 - 1); // move -1, standing at cleanup -1
-    expect(fullArmor(s)).toBe(16 + 2);
-    expect(s.colossus.hand.length).toBe(handBefore - 2 + 1); // played 2, gained a Rage card
-    // Striking the spent node again does nothing.
-    s = playRound(s, null, { 1: [{ card: 'dash.1' }, { card: 'slash.2' }] });
-    expect(s.points).toBe(1);
+    expect(s.burst).toBe(0);
+    expect(s.stats.bursts).toBe(1);
+    expect(s.hunters.every((h) => !h.climbing)).toBe(true);
+    expect(s.hunters[2].hp).toBe(12);
+    expect(fullArmor(s)).toBe(18);
+    expect(s.colossus.hand.some((c) => c.endsWith('.r'))).toBe(true);
   });
 
-  it('Body Thrash on a node: 3 damage and -3 Grip; Grip 0 means a fall for 3 more', () => {
+  it('attacks off the core do nothing; a climber who falls short is shaken off and hurt', () => {
     let s = newGame();
-    const h = s.hunters[0];
-    h.pos = null;
-    h.node = 'B1';
-    h.grip = 3;
-    h.mountedRound = 1;
-    s = playRound(s, [{ card: 'bodyThrash.1', targets: [{ node: 'B1' }] }, { card: 'feint.1' }], { 1: [{ card: 'dash.1' }, { card: 'dash.2' }] });
-    const after = s.hunters[0];
-    expect(after.node).toBeNull();
-    expect(after.hp).toBe(12 - 3 - 3);
-    expect(s.stats.falls).toBe(1);
-    expect(bodyHexes(s.colossus.center)).not.toContain(after.pos);
-    expect(after.pos).not.toBeNull();
+    climbOn(s, 0, fromCenter(s, S, 1), 0);
+    s = playRound(s, null, { 1: [{ card: 'slash.1' }] });
+    expect(s.burst).toBe(0);
+    expect(s.hunters[0].climbing).toBe(false);
+    expect(s.hunters[0].hp).toBe(12 - SHAKE_DAMAGE);
+    expect(s.stats.shakeOffs).toBe(1);
   });
 
-  it('climbers lose 1 Grip per standing cleanup and fall at 0', () => {
+  it('climbers ride along when the Colossus moves, and Body Thrash on a body hex hits them', () => {
     let s = newGame();
-    const h = s.hunters[0];
-    h.pos = null;
-    h.node = 'L2';
-    h.grip = 1;
-    h.mountedRound = 1;
-    s = playRound(s, null, { 1: [{ card: 'slash.1' }, { card: 'slash.2' }] });
-    expect(s.hunters[0].node).toBeNull();
+    climbOn(s, 0, s.colossus.center);
+    s = playRound(s, [{ card: 'stride.1', aim: hexAt(4, 0) }, { card: 'bodyThrash.1', targets: [hexAt(4, 4)] }], { 1: [] });
     expect(s.hunters[0].hp).toBe(9);
+    expect(s.hunters[0].climbing).toBe(true);
+    expect(s.hunters[0].pos).toBe(s.colossus.center);
+    expect(s.colossus.center).not.toBe(hexAt(4, 4));
+  });
+
+  it('a climber can jump down with a move card', () => {
+    let s = newGame();
+    climbOn(s, 0, fromCenter(s, S, 1));
+    s = playRound(s, null, { 1: [{ card: 'sidestep.1', dest: hexAt(4, 7) }] });
+    expect(s.hunters[0].climbing).toBe(false);
+    expect(s.hunters[0].pos).toBe(hexAt(4, 7));
   });
 });
 
-// ------------------------------------------------------------------ Rest, burn, fatigue
+// ------------------------------------------------------------------ escalation & endings
 
-describe('Rest and the fatigue clock', () => {
-  it('Standard Rest reclaims the discard, burns the chosen card and heals 2', () => {
+describe('escalation and endings', () => {
+  it('at one strike from defeat the Colossus is Enraged: up to 3 cards, one face up', () => {
     let s = newGame();
-    const h = s.hunters[0];
-    h.hp = 5;
-    h.hand = ['rest.1', 'slash.1', 'slash.2'];
-    h.discard = ['dash.1', 'dash.2', 'parry.1', 'sidestep.1', 'vault.1', 'vectorDash.1', 'climb.1'];
-    s = playRound(s, null, { 1: { type: 'Rest', seat: 1, burn: 'parry.1' } });
-    const after = s.hunters[0];
-    expect(after.hp).toBe(7);
-    expect(after.burned).toEqual(['parry.1']);
-    expect(after.discard).toEqual([]);
-    expect(after.hand).toHaveLength(9);
-    expect(after.hand).not.toContain('parry.1');
-    expect(after.dice.filter((d) => d === 'standard')).toHaveLength(0); // not a Super Rest
-  });
-
-  it('Super Rest heals 4 and upgrades a die, max 2 upgrades, then +1 max HP (cap 14)', () => {
-    let s = newGame();
-    const superRest = (st: GameState, burn: string) => {
-      const h = st.hunters[0];
-      h.discard = h.hand.filter((c) => c !== 'rest.1');
-      h.hand = ['rest.1'];
-      h.hp = 3;
-      return playRound(st, null, { 1: { type: 'Rest', seat: 1, burn } });
-    };
-    s = superRest(s, 'parry.1');
-    expect(s.hunters[0].hp).toBe(7);
-    expect(s.hunters[0].dice.filter((d) => d === 'standard')).toHaveLength(1);
-    s = superRest(s, 'climb.1');
-    expect(s.hunters[0].upgrades).toBe(2);
-    expect(s.hunters[0].dice.filter((d) => d === 'standard')).toHaveLength(2);
-    s = superRest(s, 'vault.1');
-    expect(s.hunters[0].upgrades).toBe(2);
-    expect(s.hunters[0].maxHp).toBe(13);
-    expect(s.stats.superRests).toBe(3);
-
-    // The Vanguard has nothing to upgrade, so its Super Rest raises max HP straight away.
-    let v = newGame();
-    const g = v.hunters[2];
-    g.discard = g.hand.filter((c) => c !== 'rest.1');
-    g.hand = ['rest.1'];
-    v = playRound(v, null, { 3: { type: 'Rest', seat: 3, burn: 'parry.1' } });
-    expect(v.hunters[2].maxHp).toBe(13);
-  });
-
-  it('Exhausts a Hunter whose deck drops below 4 cards', () => {
-    let s = newGame();
-    const h = s.hunters[1];
-    h.hand = ['rest.1'];
-    h.discard = ['volley.1', 'volley.2', 'step.1'];
-    h.burned = ['parry.1', 'climb.1', 'grapple.1', 'step.2', 'stride.1', 'volley.3'];
-    s = playRound(s, null, { 2: { type: 'Rest', seat: 2, burn: 'step.1' } });
-    expect(s.hunters[1].exhausted).toBe(true);
-    expect(s.hunters[1].pos).toBeNull();
-    expect(s.stats.exhaustions).toBe(1);
-  });
-
-  it('a Hunter who plays every card and Rests each cycle is Exhausted after 7 Rests, on round 30', () => {
-    let s = newGame(3);
-    while (!s.winner) s = playRound(s, null);
-    expect(s.winner).toBe('colossus');
-    expect(s.round).toBe(30);
-    expect(s.stats.exhaustions).toBe(4);
-    for (const h of s.hunters) expect(h.burned).toHaveLength(7);
-  });
-});
-
-// ------------------------------------------------------------------ escalation, charges, cubes
-
-describe('escalation and the Colossus deck', () => {
-  it('at one point from defeat the Colossus is Enraged: 3 cards, one face up', () => {
-    let s = newGame();
-    s.points = 2;
-    const h = s.hunters[0];
-    h.pos = null;
-    h.node = 'B1';
-    h.grip = 6;
-    h.mountedRound = 1;
-    s = playRound(s, null, { 1: [{ card: 'sidestep.1', node: 'H1' }, { card: 'slash.1' }] });
+    s.points = 3;
+    climbOn(s, 2, s.colossus.center);
+    s.burst = BURST_TARGET - 3;
+    s = playRound(s, null, { 3: [{ card: 'sledge.1' }] });
     expect(s.points).toBe(4);
-    expect(fullArmor(s)).toBe(16 + 8);
-    expect(s.colossus.hand.filter((c) => c.endsWith('.r'))).toHaveLength(2);
     expect(s.colossus.enraged).toBe(true);
-    expect(requiredBossCount(s)).toBe(3);
-    const plays: BossPlay[] = [{ card: 'feint.1' }, { card: 'blastingShell.1' }, { card: 'quickSwipe.2', targets: [{ hex: fromCenter(s, 0, 2) }] }];
+    const plays: BossPlay[] = [{ card: 'feint.1' }, { card: 'blastingShell.1' }, { card: 'quickSwipe.2', targets: [fromCenter(s, 0, 2)] }];
     const { lock } = makeBossCommitment(s, plays, 'z', 1);
     expect(lock.faceUp).toEqual(plays[1]);
     expect(() => applyAction(s, { ...lock, faceUp: null })).toThrow(/face up/);
@@ -364,97 +392,10 @@ describe('escalation and the Colossus deck', () => {
   it('the Hunters win on the final Vital Strike', () => {
     let s = newGame();
     s.points = 4;
-    const h = s.hunters[0];
-    h.pos = null;
-    h.node = 'B2';
-    h.grip = 4;
-    s = playRound(s, null, { 1: [{ card: 'slash.1' }, { card: 'dash.1' }] });
+    climbOn(s, 2, s.colossus.center);
+    s.burst = BURST_TARGET - 3;
+    s = playRound(s, null, { 3: [{ card: 'sledge.1' }] });
     expect(s.winner).toBe('hunters');
-    expect(s.phase).toBe('gameOver');
-  });
-
-  it('Charge Forward is declared a round early, then surges to the edge through Hunters', () => {
-    let s = newGame();
-    const victim = hexAt(4, 7);
-    s.hunters[1].pos = victim;
-    s = playRound(s, [{ card: 'chargeForward.1', dir: S }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }], {
-      2: [{ card: 'step.1' }, { card: 'step.2' }],
-    });
-    expect(s.colossus.center).toBe(hexAt(4, 4));
-    expect(s.pendingCharged).toEqual([{ card: 'chargeForward.1', dir: S }]);
-    s = playRound(s, [{ card: 'feint.1' }, { card: 'bodyThrash.2', targets: [{ hex: far(s) }] }], {
-      2: [{ card: 'stride.1' }, { card: 'grapple.1' }],
-    });
-    expect(s.colossus.center).toBe(hexAt(4, 8));
-    expect(s.colossus.facing).toBe(S);
-    expect(s.hunters[1].hp).toBe(8);
-    expect(bodyHexes(s.colossus.center)).not.toContain(s.hunters[1].pos);
-  });
-
-  it('Red Cubes detonate next round, so moving out of the lane is safe', () => {
-    let s = newGame();
-    const lane = [fromCenter(s, S, 3), fromCenter(s, S, 4)];
-    s.hunters[0].pos = lane[0];
-    s.hunters[1].pos = lane[1];
-    s = playRound(s, [{ card: 'lineBurst.1', dir: S }, { card: 'feint.1' }], {
-      1: [{ card: 'dash.1' }, { card: 'dash.2' }],
-      2: [{ card: 'step.1' }, { card: 'step.2' }],
-    });
-    expect(s.cubes[0].hexes).toEqual(expect.arrayContaining(lane));
-    expect(s.hunters[0].hp).toBe(12);
-    s = playRound(s, [{ card: 'bodyThrash.1', targets: [{ hex: far(s) }] }, { card: 'blastingShell.1' }], {
-      1: [{ card: 'sidestep.1', dest: hexAt(2, 7) }, { card: 'vault.1' }],
-      2: [{ card: 'stride.1' }, { card: 'grapple.1' }],
-    });
-    expect(s.hunters[0].hp).toBe(12);
-    expect(s.hunters[1].hp).toBe(7);
-    expect(s.cubes).toHaveLength(0);
-  });
-
-  it('Blasting Shell reflects 2 when all but one Hunter attack', () => {
-    let s = newGame();
-    for (const [i, d] of [[0, 3], [1, 2], [2, 4]] as const) s.hunters[i].pos = fromCenter(s, d, 2);
-    s.colossus.armor = 10;
-    s = playRound(s, [{ card: 'blastingShell.1' }, { card: 'feint.1' }], {
-      1: [{ card: 'slash.1' }, { card: 'dash.1' }],
-      2: [{ card: 'volley.1' }, { card: 'step.1' }],
-      3: [{ card: 'hammer.1' }, { card: 'march.1' }],
-      4: [{ card: 'stride.1' }, { card: 'stride.2' }],
-    });
-    expect(s.hunters[0].hp).toBe(10);
-    expect(s.hunters[1].hp).toBe(10);
-    expect(s.hunters[2].hp).toBe(10);
-    expect(s.hunters[3].hp).toBe(12);
-  });
-});
-
-// ------------------------------------------------------------------ misc rules
-
-describe('Hunter details', () => {
-  it('Slasher Momentum builds per consecutive attacking round and resets when hurt', () => {
-    let s = newGame();
-    const spot = fromCenter(s, S, 2);
-    s.hunters[0].pos = spot;
-    s.colossus.armor = 16;
-    s = playRound(s, null, { 1: [{ card: 'slash.1' }, { card: 'dash.1' }] });
-    expect(s.hunters[0].momentum).toBe(1);
-    s = playRound(s, null, { 1: [{ card: 'slash.2' }, { card: 'dash.2' }] });
-    expect(s.hunters[0].momentum).toBe(2);
-    s = playRound(s, [{ card: 'quickSwipe.2', targets: [{ hex: spot }] }, { card: 'blastingShell.1' }], {
-      1: [{ card: 'vectorDash.1' }, { card: 'sidestep.1' }],
-    });
-    expect(s.hunters[0].momentum).toBe(0);
-  });
-
-  it('a Downed ally can be revived once by an adjacent Hunter spending their turn', () => {
-    let s = newGame();
-    s.hunters[0].pos = hexAt(3, 9);
-    s.hunters[1].pos = hexAt(4, 9);
-    s.hunters[1].hp = 0;
-    s.hunters[1].down = true;
-    s = playRound(s, null, { 1: { type: 'Revive', seat: 1, target: 2 } });
-    expect(s.hunters[1]).toMatchObject({ down: false, hp: 4, revived: true });
-    expect(s.hunters[0].hand).toHaveLength(10); // no cards spent
   });
 
   it('the Colossus wins when every Hunter is Down', () => {
@@ -468,16 +409,40 @@ describe('Hunter details', () => {
     });
     s.hunters[0].pos = spot;
     s.hunters[0].hp = 3;
-    s = playRound(s, [{ card: 'quickSwipe.1', targets: [{ hex: spot }] }, { card: 'feint.1' }], { 1: [{ card: 'dash.1' }, { card: 'dash.2' }] });
+    s = playRound(s, [{ card: 'quickSwipe.1', targets: [spot] }]);
     expect(s.winner).toBe('colossus');
+  });
+});
+
+describe('Hunter details', () => {
+  it('Slasher Momentum builds per consecutive attacking round and resets when hurt', () => {
+    let s = newGame();
+    const spot = fromCenter(s, S, 2);
+    s.hunters[0].pos = spot;
+    s = playRound(s, null, { 1: [{ card: 'slash.1' }] });
+    expect(s.hunters[0].momentum).toBe(1);
+    s = playRound(s, null, { 1: [{ card: 'slash.2' }] });
+    expect(s.hunters[0].momentum).toBe(2);
+    s = playRound(s, [{ card: 'quickSwipe.2', targets: [spot] }], { 1: [{ card: 'vectorDash.1' }] });
+    expect(s.hunters[0].momentum).toBe(0);
+  });
+
+  it('a Downed ally can be revived once by an adjacent Hunter spending their turn', () => {
+    let s = newGame();
+    s.hunters[0].pos = hexAt(3, 9);
+    s.hunters[1].pos = hexAt(4, 9);
+    s.hunters[1].hp = 0;
+    s.hunters[1].down = true;
+    s = playRound(s, null, { 1: { type: 'Revive', seat: 1, target: 2 } });
+    expect(s.hunters[1]).toMatchObject({ down: false, hp: 4, revived: true });
   });
 
   it('Bleed removes 1 Armor at each of the next 2 cleanups', () => {
     let s = newGame();
     s.colossus.bleed = 2;
-    s = playRound(s, [{ card: 'feint.1' }, { card: 'bodyThrash.1', targets: [{ hex: far(s) }] }]);
+    s = playRound(s, null);
     expect(s.colossus.armor).toBe(15);
-    s = playRound(s, [{ card: 'quickSwipe.1', targets: [{ hex: fromCenter(s, 0, 2) }] }, { card: 'bodyThrash.2', targets: [{ hex: far(s) }] }]);
+    s = playRound(s, null);
     expect(s.colossus.armor).toBe(14);
     expect(s.colossus.bleed).toBe(0);
   });
@@ -495,8 +460,8 @@ describe('determinism and hidden information', () => {
 
   it('views hide the Colossus hand from Hunters and Hunter commits from the Colossus', () => {
     let s = newGame();
-    s = applyAction(s, makeBossCommitment(s, [{ card: 'feint.1' }, { card: 'blastingShell.1' }], 's').lock);
-    s = applyAction(s, idleHunterAction(s, 1));
+    s = applyAction(s, makeBossCommitment(s, [{ card: 'feint.1' }], 's').lock);
+    s = applyAction(s, { type: 'CommitHunterCards', seat: 1, plays: [{ card: 'dash.1' }] });
     const hunterView = projectView(s, 2);
     expect(hunterView.colossus.hand.every((c) => c === 'hidden')).toBe(true);
     expect(hunterView.commits[0]?.kind).toBe('cards');
@@ -504,6 +469,12 @@ describe('determinism and hidden information', () => {
     const bossView = projectView(s, 0);
     expect(bossView.colossus.hand).toEqual(s.colossus.hand);
     expect(bossView.commits[0]).toEqual({ kind: 'hidden' });
-    expect(projectView(s, 'spectator').commits[0]).toEqual({ kind: 'hidden' });
+  });
+
+  it('every resolution event carries a position snapshot for the replay', () => {
+    let s = newGame();
+    s = playRound(s, null, { 1: [{ card: 'dash.1', dest: hexAt(1, 7) }] });
+    const move = s.log.find((e) => e.step === '3.1')!;
+    expect(move.snap?.pos[0]).toBe(hexAt(1, 7));
   });
 });

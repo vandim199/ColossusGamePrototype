@@ -1,33 +1,33 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ALL_HEXES,
+  BURST_TARGET,
   CLASSES,
-  DIR_NAMES,
-  LEGS,
-  NODES,
-  NODE_LINKS,
-  NODE_NAMES,
+  MAX_HUNTER_CARDS,
   bodyHexes,
   bodyRing,
   bossDef,
+  cardType,
+  chargePath,
   cubesForPlays,
   describeBossPlay,
   hexLabel,
   hunterDef,
   isRestCard,
-  isSuperRestNow,
+  isSuperRest,
+  lockedWhileTumbled,
+  maxBossCards,
   reachable,
-  requiredBossCount,
-  requiredHunterCount,
   revivableAllies,
+  stridePath,
+  swipeHexes,
+  thrashHexes,
   validateBossPlays,
   validateHunterPlays,
   type BossPlay,
-  type Dir,
   type GameState,
   type HexKey,
   type HunterPlay,
-  type NodeId,
 } from '../engine';
 import type { Session } from '../host/session';
 import type { ClientView } from '../host/types';
@@ -35,8 +35,7 @@ import type { ClientView } from '../host/types';
 export interface BoardOverlay {
   selectable?: Set<HexKey>;
   onPick?: (h: HexKey) => void;
-  nodes?: Set<NodeId>;
-  onNode?: (n: NodeId) => void;
+  onHover?: (h: HexKey | null) => void;
   previewCubes?: HexKey[];
   arrows?: { from: HexKey; to: HexKey; color: string; dashed?: boolean }[];
   aims?: HexKey[];
@@ -48,11 +47,18 @@ type SetOverlay = (o: BoardOverlay) => void;
 
 function HunterCard({ id, selected, order, onClick, disabled }: { id: string; selected?: boolean; order?: number; onClick?: () => void; disabled?: boolean }) {
   const d = hunterDef(id);
-  const kind = [d.attack && (d.attack.range > 1 ? `attack · range ${d.attack.range}` : 'attack · melee'), d.move && (d.move.kind === 'walk' ? `move ${d.move.range}` : d.move.kind), d.parry && 'parry', d.climb && 'climb', d.ability && 'ability', d.rest && 'rest']
+  const kind = [
+    d.attack && (d.attack.range > 1 ? `attack · range ${d.attack.range}` : 'attack · melee'),
+    d.move && (d.move.kind === 'walk' ? `move ${d.move.range}` : d.move.kind),
+    d.parry && 'parry',
+    d.climb && 'climb',
+    d.ability && 'ability',
+    d.rest && 'rest',
+  ]
     .filter(Boolean)
     .join(' · ');
   return (
-    <button className={`card${selected ? ' sel' : ''}`} onClick={onClick} disabled={disabled} title={d.text}>
+    <button className={`card${d.rest ? ' rest-card' : ''}${selected ? ' sel' : ''}`} onClick={onClick} disabled={disabled} title={d.text}>
       {order !== undefined && <span className="order">{order}</span>}
       <span className="kind">{kind}</span>
       <span className="name">{d.name}</span>
@@ -66,7 +72,10 @@ function BossCard({ id, selected, order, onClick, disabled }: { id: string; sele
   return (
     <button className={`card boss${d.rage ? ' rage' : ''}${selected ? ' sel' : ''}`} onClick={onClick} disabled={disabled} title={d.text}>
       {order !== undefined && <span className="order">{order}</span>}
-      <span className="kind">{d.rage ? 'rage · ' : ''}{d.kind}</span>
+      <span className="kind">
+        {d.rage ? 'rage · ' : ''}
+        {d.kind}
+      </span>
       <span className="name">{d.name}</span>
       <span className="text">{d.text}</span>
     </button>
@@ -86,24 +95,15 @@ export function RevealedBossCard({ play }: { play: BossPlay }) {
 
 // ------------------------------------------------------------------ Hunter
 
-const COLORS: Record<string, string> = { slasher: '#2bb3a3', marksman: '#8cc95b', vanguard: '#5b8def', bard: '#c084fc' };
+const COLORS: Record<string, string> = { slasher: '#2a8a7e', marksman: '#6a9636', vanguard: '#3c64a3', bard: '#8956b5' };
 
-function simulatePositions(s: GameState, seat: number, plays: HunterPlay[]): { pos: HexKey | null; node: NodeId | null }[] {
-  const me = s.hunters[seat - 1];
-  let pos = me.pos;
-  let node = me.node;
-  const out: { pos: HexKey | null; node: NodeId | null }[] = [];
+function positionsAlong(s: GameState, seat: number, plays: HunterPlay[]): HexKey[] {
+  let pos = s.hunters[seat - 1].pos;
+  const out = [pos];
   for (const p of plays) {
-    out.push({ pos, node });
-    if (!hunterDef(p.card).move) continue;
-    if (node) {
-      if (p.jump) {
-        node = null;
-        pos = p.jump;
-      } else if (p.node) node = p.node;
-    } else if (p.dest) pos = p.dest;
+    if (hunterDef(p.card).move && p.dest) pos = p.dest;
+    out.push(pos);
   }
-  out.push({ pos, node });
   return out;
 }
 
@@ -111,7 +111,7 @@ export function teammateArrows(s: GameState, you: number) {
   const arrows: NonNullable<BoardOverlay['arrows']> = [];
   for (const h of s.hunters) {
     const c = s.commits[h.seat - 1];
-    if (h.seat === you || c?.kind !== 'cards' || !h.pos) continue;
+    if (h.seat === you || c?.kind !== 'cards') continue;
     let from = h.pos;
     for (const p of c.plays) {
       if (hunterDef(p.card).move && p.dest && p.dest !== from) {
@@ -126,9 +126,7 @@ export function teammateArrows(s: GameState, you: number) {
 function describeHunterPlay(p: HunterPlay, s: GameState): string {
   const d = hunterDef(p.card);
   const bits: string[] = [];
-  if (p.dest) bits.push(`to ${hexLabel(p.dest)}`);
-  if (p.node) bits.push(`to ${NODE_NAMES[p.node]}`);
-  if (p.jump) bits.push(`jump to ${hexLabel(p.jump)}`);
+  if (p.dest) bits.push(p.dest === s.colossus.center ? 'to the core' : `to ${hexLabel(p.dest)}`);
   if (p.target) bits.push(`on ${CLASSES[s.hunters[p.target - 1].cls].short}`);
   return bits.length ? `${d.name} (${bits.join(', ')})` : d.name;
 }
@@ -141,7 +139,6 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
   const [plays, setPlays] = useState<HunterPlay[]>([]);
   const [active, setActive] = useState<number | null>(null);
   const [editing, setEditing] = useState(true);
-  const [restOpen, setRestOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -149,38 +146,27 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
     setPlays([]);
     setActive(null);
     setEditing(true);
-    setRestOpen(false);
     setError(null);
   }, [s.round, seat]);
 
-  const canAct = s.phase === 'hunterCommit' && !me.down && !me.exhausted;
+  const canAct = s.phase === 'hunterCommit' && !me.down;
   const showEditor = canAct && (editing || !commit);
-  const need = requiredHunterCount(me);
-  const positions = useMemo(() => simulatePositions(s, seat, plays), [s, seat, plays]);
-  const validation = plays.length ? validateHunterPlays(s, seat, plays) : null;
-  const allies = s.hunters.filter((h) => h.seat !== seat && !h.exhausted);
+  const positions = useMemo(() => positionsAlong(s, seat, plays), [s, seat, plays]);
+  const validation = validateHunterPlays(s, seat, plays);
+  const allies = s.hunters.filter((h) => h.seat !== seat);
   const revivable = canAct ? revivableAllies(s, seat) : [];
+  const superRest = isSuperRest(me.hand, plays.map((p) => p.card));
 
   useEffect(() => {
     const o: BoardOverlay = { arrows: teammateArrows(s, seat) };
     if (showEditor) {
       plays.forEach((_, i) => {
-        const a = positions[i];
-        const b = positions[i + 1];
-        if (a.pos && b.pos && a.pos !== b.pos) o.arrows!.push({ from: a.pos, to: b.pos, color: '#fff' });
+        if (positions[i] !== positions[i + 1]) o.arrows!.push({ from: positions[i], to: positions[i + 1], color: '#2f6b3a' });
       });
       if (active !== null && plays[active] && hunterDef(plays[active].card).move) {
-        const at = positions[active];
-        const card = plays[active].card;
-        if (at.node) {
-          o.nodes = new Set(NODE_LINKS[at.node]);
-          o.onNode = (n) => update(active, { node: n, jump: undefined });
-          o.selectable = new Set(bodyRing(s.colossus.center, 1));
-          o.onPick = (h) => update(active, { jump: h, node: undefined });
-        } else if (at.pos) {
-          o.selectable = reachable(s, card, at.pos);
-          o.onPick = (h) => update(active, { dest: h === at.pos ? undefined : h });
-        }
+        const from = positions[active];
+        o.selectable = reachable(s, plays[active].card, from);
+        o.onPick = (h) => update(active, { dest: h === from ? undefined : h });
       }
     }
     setOverlay(o);
@@ -199,15 +185,14 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
     setError(null);
     const i = plays.findIndex((p) => p.card === card);
     if (i >= 0) {
-      setPlays(plays.filter((_, j) => j !== i));
+      setPlays(plays.filter((_, j) => j !== i).map((p) => (hunterDef(p.card).move ? { card: p.card } : p)));
       setActive(null);
       return;
     }
-    if (plays.length >= need) return;
+    if (plays.length >= MAX_HUNTER_CARDS) return;
     const d = hunterDef(card);
     const p: HunterPlay = { card };
-    if (d.ability === 'beam') p.target = allies[0]?.seat;
-    if (d.climb && !me.node) p.node = 'L1';
+    if (d.ability === 'beam') p.target = allies.find((a) => !a.climbing)?.seat ?? allies[0]?.seat;
     setPlays([...plays, p]);
     if (d.move) setActive(plays.length);
   }
@@ -219,18 +204,12 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
     if (!r.ok) setError(r.error);
     else {
       setEditing(false);
-      setRestOpen(false);
       setActive(null);
     }
   }
 
-  if (me.exhausted) return <p className="muted">You are Exhausted and out of the fight. Your team fights on.</p>;
   if (me.down)
-    return (
-      <p className="muted">
-        You are Down. {me.revived ? 'You were already revived once.' : 'An adjacent ally can spend a full turn to revive you at 4 HP.'}
-      </p>
-    );
+    return <p className="muted">You are Down. {me.revived ? 'You were already revived once.' : 'An adjacent ally can spend a full turn to revive you at 4 HP.'}</p>;
   if (s.phase === 'bossLock') return <p className="muted">The Colossus is locking its cards behind the screen…</p>;
   if (s.phase === 'bossReveal') return <p className="muted">All Hunters committed. The Colossus reveals…</p>;
   if (s.phase === 'gameOver') return null;
@@ -244,8 +223,7 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
           <span className="muted">Team plan:</span>
           {teammates.map((h) => {
             const c = s.commits[h.seat - 1]!;
-            const text =
-              c.kind === 'cards' ? c.plays.map((p) => describeHunterPlay(p, s)).join(' + ') : c.kind === 'rest' ? 'Rest' : c.kind === 'revive' ? 'Revive' : 'committed';
+            const text = c.kind === 'cards' ? (c.plays.length ? c.plays.map((p) => describeHunterPlay(p, s)).join(' + ') : 'pass') : c.kind === 'revive' ? 'Revive' : 'committed';
             return (
               <span key={h.seat} className="tag" style={{ borderColor: COLORS[h.cls], color: COLORS[h.cls] }}>
                 {CLASSES[h.cls].short}: {text}
@@ -258,9 +236,7 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
       {!showEditor && commit && (
         <div className="row">
           <span className="tag ok">Locked in</span>
-          <span>
-            {commit.kind === 'cards' ? commit.plays.map((p) => describeHunterPlay(p, s)).join(' + ') : commit.kind === 'rest' ? `Rest (burn ${hunterDef(commit.burn).name})` : commit.kind === 'revive' ? 'Revive' : ''}
-          </span>
+          <span>{commit.kind === 'cards' ? (commit.plays.length ? commit.plays.map((p) => describeHunterPlay(p, s)).join(' + ') : 'Pass') : commit.kind === 'revive' ? 'Revive' : ''}</span>
           <button className="btn small" onClick={() => setEditing(true)}>
             Change
           </button>
@@ -270,15 +246,16 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
 
       {showEditor && (
         <>
-          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
             <span>
               <b>Your turn.</b>{' '}
-              {need === 0 ? (
-                <span>Only Rest is left: Super Rest.</span>
-              ) : (
+              {me.climbing ? (
                 <span className="muted">
-                  Pick {need} card{need > 1 ? 's' : ''} (they resolve in the order picked). {me.node ? 'You are climbing: moves go 1 node or jump down.' : 'Moves: click a highlighted hex.'}
+                  You are on the Colossus: move onto the core (the central hex) and attack. Burst {s.burst}/{BURST_TARGET}. You are shaken off at the end of round{' '}
+                  {(me.mountedRound ?? s.round) + 1}.
                 </span>
+              ) : (
+                <span className="muted">Pick up to 2 cards (they resolve in the order picked), or none to stay still. Moves: click a highlighted hex.</span>
               )}
             </span>
             <span className="row">
@@ -287,42 +264,20 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
                   Revive {CLASSES[s.hunters[t - 1].cls].short}
                 </button>
               ))}
-              {me.discard.length > 0 && (
-                <button className={`btn${restOpen ? ' on' : ''}`} onClick={() => setRestOpen(!restOpen)}>
-                  {isSuperRestNow(me.hand) ? 'Super Rest…' : 'Rest…'}
-                </button>
-              )}
             </span>
           </div>
 
-          {restOpen && (
-            <div className="panel" style={{ marginBottom: 8 }}>
-              <div style={{ marginBottom: 6 }}>
-                <b>{isSuperRestNow(me.hand) ? 'Super Rest' : 'Rest'}</b>: reclaim your discard and recover {isSuperRestNow(me.hand) ? '4 HP and upgrade a die' : '2 HP'}. Pick the card to burn
-                for good. {me.hand.length + me.discard.length - 1 < 4 && <span className="error">This leaves fewer than 4 cards: you will be Exhausted.</span>}
-              </div>
-              <div className="hand">
-                {me.discard.map((c) => (
-                  <HunterCard key={c} id={c} disabled={busy} onClick={() => submit({ type: 'Rest', seat, burn: c })} />
-                ))}
-              </div>
-            </div>
-          )}
-
           <div className="hand">
-            {me.hand
-              .filter((c) => !isRestCard(c))
-              .map((c) => {
-                const i = plays.findIndex((p) => p.card === c);
-                return <HunterCard key={c} id={c} selected={i >= 0} order={i >= 0 ? i + 1 : undefined} onClick={() => toggle(c)} />;
-              })}
+            {me.hand.map((c) => {
+              const i = plays.findIndex((p) => p.card === c);
+              return <HunterCard key={c} id={c} selected={i >= 0} order={i >= 0 ? i + 1 : undefined} onClick={() => toggle(c)} />;
+            })}
           </div>
 
           {plays.length > 0 && (
             <div className="plays">
               {plays.map((p, i) => {
                 const d = hunterDef(p.card);
-                const at = positions[i];
                 return (
                   <div key={p.card} className={`play-row${active === i ? ' active' : ''}`}>
                     <b>
@@ -330,21 +285,11 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
                     </b>
                     {d.move && (
                       <>
-                        <span className="muted">{at.node ? (p.node ? `→ ${NODE_NAMES[p.node]}` : p.jump ? `jump down to ${hexLabel(p.jump)}` : 'stay on this node') : p.dest ? `→ ${hexLabel(p.dest)}` : 'stay in place'}</span>
+                        <span className="muted">{p.dest ? `→ ${p.dest === s.colossus.center ? 'the CORE' : hexLabel(p.dest)}` : 'stay in place'}</span>
                         <button className={`btn small${active === i ? ' on' : ''}`} onClick={() => setActive(active === i ? null : i)}>
                           {active === i ? 'Picking… (click the board)' : 'Choose'}
                         </button>
                       </>
-                    )}
-                    {d.climb && !at.node && (
-                      <span className="row">
-                        Mount on
-                        {LEGS.map((n) => (
-                          <button key={n} className={`btn small${p.node === n ? ' on' : ''}`} onClick={() => setPlays(plays.map((q, j) => (j === i ? { ...q, node: n } : q)))}>
-                            {NODE_NAMES[n]}
-                          </button>
-                        ))}
-                      </span>
                     )}
                     {d.ability === 'beam' && (
                       <span className="row">
@@ -356,23 +301,24 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
                         ))}
                       </span>
                     )}
-                    {d.parry && <span className="muted">Protects your final hex at step 3.3.</span>}
+                    {d.parry && <span className="muted">Protects the hex you end on.</span>}
+                    {d.rest && <span className="muted">{superRest ? 'Super Rest: +4 HP and a die upgrade.' : 'Take back your discard pile, +2 HP.'}</span>}
                   </div>
                 );
               })}
             </div>
           )}
 
-          <div className="row">
-            <button className="btn primary" disabled={busy || plays.length !== need || need === 0 || !!validation} onClick={() => submit({ type: 'CommitHunterCards', seat, plays })}>
-              Lock in
+          <div className="row" style={{ marginTop: 6 }}>
+            <button className="btn primary" disabled={busy || !!validation} onClick={() => submit({ type: 'CommitHunterCards', seat, plays })}>
+              {plays.length ? 'Lock in' : 'Pass (stay still)'}
             </button>
             {plays.length > 0 && (
               <button className="btn" onClick={() => (setPlays([]), setActive(null))}>
                 Clear
               </button>
             )}
-            {validation && plays.length === need && <span className="error">{validation}</span>}
+            {validation && plays.length > 0 && <span className="error">{validation}</span>}
             {error && <span className="error">{error}</span>}
           </div>
         </>
@@ -383,11 +329,29 @@ export function HunterControls({ view, session, setOverlay }: { view: ClientView
 
 // ------------------------------------------------------------------ Colossus
 
-type Slot = { idx: number; slot: number };
+type Slot = { idx: number; slot: number; kind: 'aim' | 'target' | 'cube' };
 
-function needsTargets(p: BossPlay): number {
+function slotsFor(p: BossPlay, superRest: boolean): Slot['kind'][] {
   const n = bossDef(p.card).needs;
-  return n === 'adjacentHex' || n === 'hexOrNode' ? 1 : n === 'twoTargets' ? 2 : 0;
+  if (n === 'aim') return ['aim'];
+  if (n === 'adjacentHex' || n === 'anyHex') return ['target'];
+  if (n === 'twoHexes') return ['target', 'target'];
+  if (n === 'restCube' && superRest) return ['cube'];
+  return [];
+}
+
+function slotValue(p: BossPlay, slot: Slot): HexKey | undefined {
+  if (slot.kind === 'aim') return p.aim;
+  if (slot.kind === 'cube') return p.hex;
+  return p.targets?.[slot.slot];
+}
+
+function withValue(p: BossPlay, slot: Slot, h: HexKey | undefined): BossPlay {
+  if (slot.kind === 'aim') return { ...p, aim: h };
+  if (slot.kind === 'cube') return { ...p, hex: h };
+  const targets = [...(p.targets ?? [])];
+  if (h) targets[slot.slot] = h;
+  return { ...p, targets };
 }
 
 export function BossControls({ view, session, setOverlay }: { view: ClientView; session: Session; setOverlay: SetOverlay }) {
@@ -395,6 +359,7 @@ export function BossControls({ view, session, setOverlay }: { view: ClientView; 
   const hand = s.colossus.hand;
   const [plays, setPlays] = useState<BossPlay[]>([]);
   const [active, setActive] = useState<Slot | null>(null);
+  const [hover, setHover] = useState<HexKey | null>(null);
   const [faceUp, setFaceUp] = useState(0);
   const [locked, setLocked] = useState<{ round: number; plays: BossPlay[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -407,68 +372,83 @@ export function BossControls({ view, session, setOverlay }: { view: ClientView; 
     setError(null);
   }, [s.round]);
 
-  const need = requiredBossCount(s);
-  const superRest = isSuperRestNow(hand);
+  const max = maxBossCards(s);
+  const superRest = isSuperRest(hand, plays.map((p) => p.card));
   const canAct = s.phase === 'bossLock';
-  const validation = plays.length ? validateBossPlays(s, plays) : null;
-  const body = useMemo(() => new Set(bodyHexes(s.colossus.center)), [s.colossus.center]);
+  const validation = plays.length ? validateBossPlays(s, plays) : 'Pick at least one card';
+  const c = s.colossus.center;
+  const body = useMemo(() => new Set(bodyHexes(c)), [c]);
+
+  const choices = (slot: Slot): Set<HexKey> => {
+    const p = plays[slot.idx];
+    if (slot.kind === 'target' && bossDef(p.card).needs === 'adjacentHex') return new Set(bodyRing(c, 1));
+    if (slot.kind === 'target') return new Set(ALL_HEXES);
+    return new Set(ALL_HEXES.filter((h) => !body.has(h)));
+  };
 
   useEffect(() => {
     if (!canAct) {
       setOverlay({});
       return;
     }
-    const o: BoardOverlay = {
-      previewCubes: cubesForPlays(s, plays),
-      aims: plays.flatMap((p) => (p.targets ?? []).map((t) => t.hex).filter((h): h is HexKey => !!h)),
-    };
-    if (active) {
-      const p = plays[active.idx];
-      const def = bossDef(p.card);
-      const setTarget = (t: { hex?: HexKey; node?: NodeId }) => {
-        setPlays((ps) =>
-          ps.map((q, j) => {
-            if (j !== active.idx) return q;
-            if (def.needs === 'restCube') return { ...q, hex: t.hex };
-            const targets = [...(q.targets ?? [])];
-            targets[active.slot] = t;
-            return { ...q, targets };
-          }),
-        );
-        const more = def.needs === 'twoTargets' && active.slot === 0;
-        setActive(more ? { idx: active.idx, slot: 1 } : null);
-      };
-      o.selectable = new Set(def.needs === 'adjacentHex' ? bodyRing(s.colossus.center, 1) : ALL_HEXES.filter((h) => !body.has(h)));
-      o.onPick = (hex) => setTarget({ hex });
-      if (def.needs === 'hexOrNode' || def.needs === 'twoTargets') {
-        o.nodes = new Set(NODES);
-        o.onNode = (node) => setTarget({ node });
+    // Hovering previews the active choice before you click it.
+    const shown = plays.map((p, i) => (active && active.idx === i && hover && choices(active).has(hover) ? withValue(p, active, hover) : p));
+    const o: BoardOverlay = { previewCubes: cubesForPlays(s, shown), aims: [], arrows: [], onHover: setHover };
+    for (const p of shown) {
+      const t = cardType(p.card);
+      if (t === 'quickSwipe' && p.targets?.[0]) o.previewCubes!.push(...swipeHexes(c, p.targets[0]));
+      if ((t === 'bodyThrash' || t === 'wildThrash') && p.targets) for (const x of p.targets) if (x) o.previewCubes!.push(...thrashHexes(c, x));
+      for (const x of p.targets ?? []) if (x) o.aims!.push(x);
+      if (t === 'chargeForward' && p.aim) {
+        const path = chargePath(c, p.aim);
+        if (path.length) o.arrows!.push({ from: c, to: path[path.length - 1], color: '#c2741b' });
       }
+      if (t === 'stride' && p.aim) {
+        const path = stridePath(c, p.aim, 2);
+        if (path.length) o.arrows!.push({ from: c, to: path[path.length - 1], color: '#2f6b3a' });
+      }
+      if ((t === 'triCone' || t === 'lineBurst') && p.aim) o.aims!.push(p.aim);
+    }
+    if (active) {
+      o.selectable = choices(active);
+      o.onPick = (h) => {
+        const next = plays.map((p, i) => (i === active.idx ? withValue(p, active, h) : p));
+        setPlays(next);
+        setActive(nextSlot(next, active));
+      };
     }
     setOverlay(o);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plays, active, canAct, s]);
+  }, [plays, active, hover, canAct, s]);
+
+  /** After filling a slot, jump to the next empty one. */
+  function nextSlot(ps: BossPlay[], after: Slot | null): Slot | null {
+    const sr = isSuperRest(hand, ps.map((p) => p.card));
+    for (let i = 0; i < ps.length; i++) {
+      const kinds = slotsFor(ps[i], sr);
+      for (let j = 0; j < kinds.length; j++) {
+        const slot: Slot = { idx: i, slot: j, kind: kinds[j] };
+        if (kinds[j] === 'cube') continue;
+        if (after && i === after.idx && j === after.slot) continue;
+        if (!slotValue(ps[i], slot)) return slot;
+      }
+    }
+    return null;
+  }
 
   function toggle(card: string) {
     setError(null);
     const i = plays.findIndex((p) => p.card === card);
     if (i >= 0) {
-      setPlays(plays.filter((_, j) => j !== i));
-      setActive(null);
+      const next = plays.filter((_, j) => j !== i);
+      setPlays(next);
+      setActive(nextSlot(next, null));
       return;
     }
-    if (isRestCard(card)) {
-      setPlays([{ card }]);
-      setActive(superRest ? { idx: 0, slot: 0 } : null);
-      return;
-    }
-    const base = plays.filter((p) => !isRestCard(p.card));
-    if (base.length >= need) return;
-    const p: BossPlay = { card };
-    const def = bossDef(card);
-    if (def.needs === 'dir') p.dir = 3;
-    setPlays([...base, p]);
-    if (needsTargets(p)) setActive({ idx: base.length, slot: 0 });
+    if (plays.length >= max) return;
+    const next = [...plays, { card }];
+    setPlays(next);
+    setActive(nextSlot(next, null));
   }
 
   async function lock() {
@@ -493,72 +473,60 @@ export function BossControls({ view, session, setOverlay }: { view: ClientView; 
     );
   }
 
+  const label = (slot: Slot, p: BossPlay) => {
+    const v = slotValue(p, slot);
+    if (active && active.idx === slot.idx && active.slot === slot.slot && active.kind === slot.kind) return 'Click the board…';
+    if (slot.kind === 'aim') return v ? `Aimed at ${hexLabel(v)}` : 'Aim';
+    if (slot.kind === 'cube') return v ? `Free cube: ${hexLabel(v)}` : 'Free Red Cube (optional)';
+    return v ? `Target: ${body.has(v) ? (v === c ? 'your core' : 'your body') : hexLabel(v)}` : 'Choose target';
+  };
+
   return (
     <div>
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-        <span>
-          <b>Lock your cards.</b>{' '}
-          <span className="muted">
-            {need === 0
-              ? 'Nothing playable: you must Rest.'
-              : `Pick ${need} card${need > 1 ? 's' : ''}, or Rest alone. Red Cubes go down face up now; the rest stays hidden behind a SHA-256 commitment.`}
-            {s.tumble ? ' Tumbled: Charged cards are locked.' : ''}
-          </span>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <b>Lock your cards.</b>
+        <span className="muted">
+          Pick 1 to {max} cards in any combination. Aimed attacks: click any hex to point them. Red Cubes go down face up now; the rest stays hidden behind a
+          SHA-256 commitment.{s.tumble ? ' Tumbled: you cannot charge or walk.' : ''}
         </span>
       </div>
       <div className="hand">
-        {hand.map((c) => {
-          const i = plays.findIndex((p) => p.card === c);
-          const disabled = bossDef(c).kind === 'charged' && !!s.tumble;
-          return <BossCard key={c} id={c} selected={i >= 0} order={i >= 0 ? i + 1 : undefined} disabled={disabled} onClick={() => toggle(c)} />;
+        {hand.map((card) => {
+          const i = plays.findIndex((p) => p.card === card);
+          const disabled = !!s.tumble && lockedWhileTumbled(card);
+          return <BossCard key={card} id={card} selected={i >= 0} order={i >= 0 ? i + 1 : undefined} disabled={disabled} onClick={() => toggle(card)} />;
         })}
       </div>
 
       {plays.length > 0 && (
         <div className="plays">
-          {plays.map((p, i) => {
-            const def = bossDef(p.card);
-            return (
-              <div key={p.card} className={`play-row${active?.idx === i ? ' active' : ''}`}>
-                <b>
-                  {i + 1}. {def.name}
-                </b>
-                {def.needs === 'dir' && (
-                  <span className="compass">
-                    {DIR_NAMES.map((n, d) => (
-                      <button key={n} className={`btn small${p.dir === d ? ' on' : ''}`} onClick={() => setPlays(plays.map((q, j) => (j === i ? { ...q, dir: d as Dir } : q)))}>
-                        {n}
-                      </button>
-                    ))}
-                  </span>
-                )}
-                {Array.from({ length: needsTargets(p) }, (_, slot) => {
-                  const t = p.targets?.[slot];
-                  const picking = active?.idx === i && active.slot === slot;
-                  return (
-                    <button key={slot} className={`btn small${picking ? ' on' : ''}`} onClick={() => setActive(picking ? null : { idx: i, slot })}>
-                      {picking ? 'Picking… (click a hex or node)' : t ? `Target: ${t.node ? NODE_NAMES[t.node] : hexLabel(t.hex!)}` : 'Choose target'}
-                    </button>
-                  );
-                })}
-                {def.needs === 'restCube' && superRest && (
-                  <button className={`btn small${active?.idx === i ? ' on' : ''}`} onClick={() => setActive(active ? null : { idx: i, slot: 0 })}>
-                    {p.hex ? `Free cube: ${hexLabel(p.hex)}` : 'Place free Red Cube (optional)'}
+          {plays.map((p, i) => (
+            <div key={p.card} className={`play-row${active?.idx === i ? ' active' : ''}`}>
+              <b>
+                {i + 1}. {bossDef(p.card).name}
+                {isRestCard(p.card) && superRest ? ' (Super Rest)' : ''}
+              </b>
+              {slotsFor(p, superRest).map((kind, j) => {
+                const slot: Slot = { idx: i, slot: j, kind };
+                const on = active?.idx === i && active.slot === j;
+                return (
+                  <button key={j} className={`btn small${on ? ' on' : ''}`} onClick={() => setActive(on ? null : slot)}>
+                    {label(slot, p)}
                   </button>
-                )}
-                {s.colossus.enraged && (
-                  <label className="row muted">
-                    <input type="radio" name="faceup" checked={faceUp === i} onChange={() => setFaceUp(i)} /> face up
-                  </label>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+              {s.colossus.enraged && (
+                <label className="row muted">
+                  <input type="radio" name="faceup" checked={faceUp === i} onChange={() => setFaceUp(i)} /> face up
+                </label>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
       <div className="row">
-        <button className="btn primary" disabled={busy || !plays.length || !!validation} onClick={lock}>
+        <button className="btn primary" disabled={busy || !!validation} onClick={lock}>
           Lock in
         </button>
         {plays.length > 0 && (
@@ -566,7 +534,7 @@ export function BossControls({ view, session, setOverlay }: { view: ClientView; 
             Clear
           </button>
         )}
-        {validation && <span className="error">{validation}</span>}
+        {validation && plays.length > 0 && <span className="error">{validation}</span>}
         {error && <span className="error">{error}</span>}
       </div>
     </div>

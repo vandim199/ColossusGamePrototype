@@ -1,7 +1,7 @@
 # Colossus: Mind Game — browser prototype
 
 A playable prototype of the asymmetric 1v3 / 1v4 boss battler described in [GDD.md](GDD.md).
-Interpretations of unclear rules are logged in [RULINGS.md](RULINGS.md).
+Interpretations of unclear rules, and the playtest changes that now override parts of the GDD, are logged in [RULINGS.md](RULINGS.md).
 
 ## Getting started
 
@@ -20,9 +20,11 @@ Options: 1v3 or 1v4 (and which class sits out in 1v3), bot difficulty, a turn ti
 
 Each round has three steps:
 
-1. **Lock (Colossus).** Pick 2 cards (3 when Enraged) and set their direction or target on the board or the body board. Cube placements preview as you go.
-2. **Commit (Hunters).** Pick 2 cards in the order they should resolve, then click highlighted hexes for each move. Your team's committed plans show as dashed arrows. You can change your commit until the last Hunter commits.
-3. **Reveal.** A panel flips the Colossus's cards, shows the SHA-256 check, then plays the resolution step by step while the board highlights each event.
+1. **Lock (Colossus).** Pick 1 or 2 cards (3 when Enraged) in any combination. Aim cones, lines, charges and Strides by hovering, which previews the area, then clicking any hex.
+2. **Commit (Hunters).** Pick up to 2 cards in the order they should resolve, or none to stay still. Rest is just another card: it takes back your discard pile and heals. Click highlighted hexes for each move. Your team's committed plans show as dashed arrows. You can change your commit until the last Hunter commits.
+3. **Reveal.** A panel flips the Colossus's cards and shows the SHA-256 check. Then it replays the round step by step: figures glide to where they moved, and anyone who takes a hit shakes.
+
+**Climbing.** When the Colossus is Tumbled, an adjacent Hunter can play Climb & Strike to step onto its body. Next round, walk onto the **core** (the central hex) and attack. If the climbers' combined Burst reaches 4, that is a Vital Strike. Otherwise they are shaken off for 4 damage at the end of that round.
 
 ## Playing online (peer to peer)
 
@@ -57,7 +59,7 @@ npm run sim:log -- 12 1v4                     # full combat log of seed 12
 
 Every simulated game runs through the same path as real play. Each seat sees only its own view, the Colossus uses commit-reveal, and every action goes through `applyAction`. A seed always replays the same game.
 
-The report compares each stat to the GDD's playtest targets: game length, win rate, Parries, Exhaustions, rounds per strike point, climb length, Armor damage per standing round and more.
+The report compares each stat to the GDD's playtest targets: game length, win rate, Parries, rounds per strike point, climbs, Bursts and shake-offs, Colossus moves, Armor damage per standing round and more.
 
 Baseline with v2.5 numbers and both bots on `normal` (seeds 1-200):
 

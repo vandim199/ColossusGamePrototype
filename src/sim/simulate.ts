@@ -53,10 +53,12 @@ export interface Report {
   parries: number[];
   whiffs: number[];
   feintCatches: number[];
-  exhaustions: number[];
+  climbs: number[];
+  bursts: number[];
+  shakeOffs: number[];
   downs: number[];
   revives: number[];
-  falls: number[];
+  bossMoves: number[];
   shatters: number[];
   shortTumbles: number[];
   climbLengths: number[];
@@ -79,10 +81,12 @@ export function runBatch(opts: Omit<SimOptions, 'seed'> & { games: number; seed:
     parries: [],
     whiffs: [],
     feintCatches: [],
-    exhaustions: [],
+    climbs: [],
+    bursts: [],
+    shakeOffs: [],
     downs: [],
     revives: [],
-    falls: [],
+    bossMoves: [],
     shatters: [],
     shortTumbles: [],
     climbLengths: [],
@@ -102,10 +106,12 @@ export function runBatch(opts: Omit<SimOptions, 'seed'> & { games: number; seed:
     r.parries.push(st.parries);
     r.whiffs.push(st.whiffs);
     r.feintCatches.push(st.feintCatches);
-    r.exhaustions.push(st.exhaustions);
+    r.climbs.push(st.climbs);
+    r.bursts.push(st.bursts);
+    r.shakeOffs.push(st.shakeOffs);
     r.downs.push(st.downs);
     r.revives.push(st.revives);
-    r.falls.push(st.falls);
+    r.bossMoves.push(st.bossMoves);
     r.shatters.push(st.shatters);
     r.shortTumbles.push(st.shortTumbles);
     r.climbLengths.push(...st.climbLengths);

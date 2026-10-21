@@ -3,7 +3,6 @@ import type { Dir, HexKey } from './hex';
 
 export type HunterClass = 'slasher' | 'marksman' | 'vanguard' | 'bard';
 export type Mode = '1v3' | '1v4';
-export type NodeId = 'L1' | 'L2' | 'B1' | 'B2' | 'H1' | 'H2';
 export type Phase = 'bossLock' | 'hunterCommit' | 'bossReveal' | 'gameOver';
 export type Winner = 'hunters' | 'colossus' | 'draw';
 
@@ -15,24 +14,19 @@ export interface GameConfig {
   /** Hunter classes in seating order (seat 1 first). 3 for 1v3, 4 for 1v4. */
   classes: HunterClass[];
   seed: number;
-  /** Safety valve for the simulator; the fatigue clock normally ends games long before this. */
+  /** Safety valve: a game that reaches this round is a draw. */
   maxRounds: number;
 }
 
 // ---------------------------------------------------------------- actions
 
-export interface BossTarget {
-  hex?: HexKey;
-  node?: NodeId;
-}
-
 /** One Colossus card as locked behind the screen, with its targeting. */
 export interface BossPlay {
   card: string;
-  /** Tri-Cone, Line Burst, Charge Forward. */
-  dir?: Dir;
-  /** Quick Swipe (1), Body Thrash (1), Wild Thrash (2). */
-  targets?: BossTarget[];
+  /** Aimed cards (Tri-Cone, Line Burst, Charge Forward, Stride): any hex; the attack points from the Colossus toward it. */
+  aim?: HexKey;
+  /** Quick Swipe (1), Body Thrash (1), Wild Thrash (2). Body Thrash may target a body hex to hit climbers. */
+  targets?: HexKey[];
   /** Super Rest's free Red Cube. */
   hex?: HexKey;
 }
@@ -40,19 +34,14 @@ export interface BossPlay {
 /** One Hunter card committed face up, with its targeting. */
 export interface HunterPlay {
   card: string;
-  /** Ground movement destination. */
+  /** Movement destination. Climbers may pick a body hex (climb) or a ground hex (jump down). */
   dest?: HexKey;
-  /** Body-board node: climb destination, or the Legs node to mount on. */
-  node?: NodeId;
-  /** Jump down from the body to this ground hex. */
-  jump?: HexKey;
   /** Ally seat (Rescue Beam). */
   target?: number;
 }
 
 export type HunterCommit =
   | { kind: 'cards'; plays: HunterPlay[] }
-  | { kind: 'rest'; burn: string }
   | { kind: 'revive'; target: number }
   /** Only appears in redacted views: "committed, but you can't see what". */
   | { kind: 'hidden' };
@@ -69,8 +58,8 @@ export type Action =
       /** Enraged only: the one card locked face up. */
       faceUp: BossPlay | null;
     }
+  /** 0, 1 or 2 cards (Rest included). Zero cards is a pass. */
   | { type: 'CommitHunterCards'; seat: number; plays: HunterPlay[] }
-  | { type: 'Rest'; seat: number; burn: string }
   | { type: 'Revive'; seat: number; target: number }
   | { type: 'RevealBossCards'; seat: 0; plays: BossPlay[]; salt: string }
   /** Host-only escape hatch when a remote Colossus can't (or won't validly) open its commitment. */
@@ -83,15 +72,14 @@ export interface HunterState {
   cls: HunterClass;
   hp: number;
   maxHp: number;
-  /** Ground hex, or null while climbing or once Exhausted. */
-  pos: HexKey | null;
-  /** Body-board node while climbing. */
-  node: NodeId | null;
-  grip: number;
+  /** Ground hex, or a Colossus body hex while climbing. */
+  pos: HexKey;
+  /** Standing on the Colossus (pos is one of its 7 hexes; the Hunter rides along when it moves). */
+  climbing: boolean;
+  /** Round this Hunter mounted; it is shaken off at the end of the following round. */
+  mountedRound: number | null;
   hand: string[];
   discard: string[];
-  /** The personal Exhausted pile: cards burned by Rests. */
-  burned: string[];
   /** Attack dice pool (Super Rest upgrades these). */
   dice: DieKind[];
   upgrades: number;
@@ -103,11 +91,8 @@ export interface HunterState {
   down: boolean;
   /** A Hunter can be revived once per game. */
   revived: boolean;
-  exhausted: boolean;
   attackedThisRound: boolean;
   damagedThisRound: boolean;
-  /** Round this Hunter mounted the body (for climb-duration stats). */
-  mountedRound: number | null;
 }
 
 export interface ColossusState {
@@ -154,6 +139,14 @@ export interface RevealRecord {
 
 export type Step = 'setup' | 'lock' | 'reveal' | '3.1' | '3.2' | '3.3' | '3.4' | '3.5' | 'cleanup' | 'end';
 
+/** Where everything stands right after a log event, so the UI can replay a round step by step. */
+export interface Snapshot {
+  center: HexKey;
+  /** Hunter positions by index (seat - 1). */
+  pos: HexKey[];
+  down: boolean[];
+}
+
 export interface LogEvent {
   round: number;
   step: Step;
@@ -162,6 +155,9 @@ export interface LogEvent {
   tone: 'info' | 'boss' | 'hunter' | 'damage' | 'heal' | 'parry' | 'strike' | 'big';
   seat?: number;
   hexes?: HexKey[];
+  /** The Colossus took a hit (the UI shakes it). */
+  bossHit?: boolean;
+  snap?: Snapshot;
 }
 
 export interface GameStats {
@@ -170,14 +166,18 @@ export interface GameStats {
   feintCatches: number;
   shortTumbles: number;
   shatters: number;
-  exhaustions: number;
   downs: number;
   revives: number;
-  falls: number;
+  climbs: number;
+  /** Climbers shaken off because the Burst fell short. */
+  shakeOffs: number;
+  /** Bursts that landed a Vital Strike. */
+  bursts: number;
   hunterRests: number;
   superRests: number;
   bossRests: number;
-  /** Round of each Vital Strike point. */
+  bossMoves: number;
+  /** Round of each Vital Strike. */
   pointRounds: number[];
   /** Rounds each climb lasted (mount to dismount). */
   climbLengths: number[];
@@ -199,7 +199,8 @@ export interface GameState {
   cubes: CubeWave[];
   points: number;
   target: number;
-  spentNodes: NodeId[];
+  /** Damage dealt to the Colossus's core by climbers on its central hex in the current climb. */
+  burst: number;
   ragePile: string[];
   tumble: Tumble | null;
   /** Declared last round (arrow token); resolves at step 3.5 this round. */

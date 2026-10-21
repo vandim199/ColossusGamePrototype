@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { verifyCommitment, type HexKey, type LogEvent, type NodeId } from '../engine';
+import { verifyCommitment, type HexKey, type LogEvent, type Snapshot } from '../engine';
 import type { Session } from '../host/session';
 import { roleName, type ClientView } from '../host/types';
-import { Board } from './Board';
+import { Board, type ShakeCue } from './Board';
 import { BossControls, HunterControls, RevealedBossCard, teammateArrows, type BoardOverlay } from './Controls';
-import { BodyBoard, ColossusPanel, CombatLog, HuntersPanel, StatusStrip } from './Panels';
+import { ClimbPanel, ColossusPanel, CombatLog, HuntersPanel, StatusStrip } from './Panels';
 
 /** Re-render on every session event (a new view, but also "host left", which changes no view). */
 export function useSessionView(session: Session): ClientView | null {
@@ -33,15 +33,22 @@ const PHASE_TEXT: Record<string, string> = {
   gameOver: 'Game over',
 };
 
-const NODE_RE = /(Left|Right) (Leg|Back|Head)/;
-const NODE_BY_NAME: Record<string, NodeId> = {
-  'Left Leg': 'L1',
-  'Right Leg': 'L2',
-  'Left Back': 'B1',
-  'Right Back': 'B2',
-  'Left Head': 'H1',
-  'Right Head': 'H2',
-};
+/** What the board shows for one step of the reveal replay. */
+interface ReplayCue {
+  hexes: HexKey[];
+  snap?: Snapshot;
+  shake?: ShakeCue;
+}
+
+function cueFor(e: LogEvent | undefined, index: number): ReplayCue | null {
+  if (!e) return null;
+  const hurt = e.tone === 'damage' && e.seat ? [e.seat] : [];
+  return {
+    hexes: e.hexes ?? [],
+    snap: e.snap,
+    shake: hurt.length || e.bossHit ? { key: index, seats: hurt, boss: !!e.bossHit } : undefined,
+  };
+}
 
 function RevealOverlay({
   view,
@@ -54,7 +61,7 @@ function RevealOverlay({
   events: LogEvent[];
   /** The commitment this client saw at lock time, before any Hunter committed. */
   expected: string | undefined;
-  onFocus: (f: { hexes: HexKey[]; nodes: NodeId[] } | null) => void;
+  onFocus: (f: ReplayCue | null) => void;
   onClose: () => void;
 }) {
   const r = view.state.lastReveal!;
@@ -72,10 +79,10 @@ function RevealOverlay({
   }, [shown, events]);
 
   useEffect(() => {
-    const cur = events[Math.max(0, shown - 1)];
-    if (!cur) return;
-    const m = cur.text.match(NODE_RE);
-    onFocus({ hexes: cur.hexes ?? [], nodes: m ? [NODE_BY_NAME[m[0]]] : [] });
+    const i = Math.max(0, shown - 1);
+    const cue = cueFor(events[i], i);
+    if (!cue) return;
+    onFocus(cue);
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown]);
@@ -122,7 +129,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
   const [overlay, setOverlay] = useState<BoardOverlay>({});
   const [revealRound, setRevealRound] = useState<number | null>(null);
   const seenReveal = useRef(0);
-  const [focus, setFocus] = useState<{ hexes: HexKey[]; nodes: NodeId[] } | null>(null);
+  const [focus, setFocus] = useState<ReplayCue | null>(null);
   const timerEnd = useRef<{ key: string; endsAt: number } | null>(null);
   const seenCommitments = useRef(new Map<number, string>());
 
@@ -157,7 +164,11 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
   }
 
   const you = view.you;
-  const revealEvents = revealRound !== null ? s.log.filter((e) => e.round === revealRound && e.step !== 'lock' && e.step !== 'setup') : [];
+  // A reveal that just arrived replays from its first step in this very render, so figures never jump ahead.
+  const fresh = s.lastReveal && s.lastReveal.round > seenReveal.current ? s.lastReveal.round : null;
+  const replayRound = revealRound ?? fresh;
+  const revealEvents = replayRound !== null ? s.log.filter((e) => e.round === replayRound && e.step !== 'lock' && e.step !== 'setup') : [];
+  const cue = replayRound !== null ? (revealRound !== null && focus ? focus : cueFor(revealEvents[0], 0)) : null;
   const remaining = timerEnd.current ? Math.max(0, Math.ceil((timerEnd.current.endsAt - now) / 1000)) : null;
   const spectatorArrows = you === 'spectator' || you === 0 ? [] : teammateArrows(s, you as number);
 
@@ -187,13 +198,16 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
           onPick={overlay.onPick}
           previewCubes={overlay.previewCubes}
           aims={overlay.aims}
-          arrows={revealRound !== null ? focusArrows(focus) : overlay.arrows ?? spectatorArrows}
-          focus={revealRound !== null ? focus?.hexes : undefined}
+          onHover={overlay.onHover}
+          arrows={cue ? focusArrows(cue) : overlay.arrows ?? spectatorArrows}
+          focus={cue?.hexes}
+          snap={cue?.snap}
+          shake={cue?.shake}
         />
       </div>
       <div className="side">
         <ColossusPanel state={s} you={you} />
-        <BodyBoard state={s} pickable={overlay.nodes} onPick={overlay.onNode} focus={revealRound !== null ? focus?.nodes : undefined} />
+        <ClimbPanel state={s} />
         <HuntersPanel state={s} seats={view.seats} you={you} />
         <CombatLog log={s.log} />
       </div>
@@ -243,7 +257,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
               {s.winner === 'hunters' ? `${s.points} Vital Strike points in ${s.round} round${s.round === 1 ? '' : 's'}.` : s.winner === 'colossus' ? `Every Hunter is Down after ${s.round} round${s.round === 1 ? '' : 's'}.` : 'Round limit reached.'}
             </p>
             <p className="muted">
-              Parries {s.stats.parries} · whiffs {s.stats.whiffs} · Armor Shatters {s.stats.shatters} · Exhaustions {s.stats.exhaustions} · Downs {s.stats.downs} · falls {s.stats.falls}
+              Parries {s.stats.parries} · whiffs {s.stats.whiffs} · Armor Shatters {s.stats.shatters} · climbs {s.stats.climbs} · Bursts {s.stats.bursts} · Downs {s.stats.downs}
             </p>
             <div className="row">
               <button className="btn primary" onClick={onExit}>

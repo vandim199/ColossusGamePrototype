@@ -1,9 +1,8 @@
 import { useEffect, useRef } from 'react';
 import {
+  BURST_TARGET,
   CLASSES,
   DIE_LABEL,
-  NODE_NAMES,
-  NODE_POINTS,
   bossDef,
   describeBossPlay,
   fullArmor,
@@ -11,88 +10,43 @@ import {
   type GameState,
   type HunterState,
   type LogEvent,
-  type NodeId,
 } from '../engine';
 import type { SeatInfo } from '../host/types';
 import { ROLE_COLOR, ROLE_LETTER, controllerLabel } from './theme';
 
-// ------------------------------------------------------------------ body board
+// ------------------------------------------------------------------ the climb
 
-const TIERS: { label: string; nodes: NodeId[] }[] = [
-  { label: 'Head', nodes: ['H1', 'H2'] },
-  { label: 'Back', nodes: ['B1', 'B2'] },
-  { label: 'Legs', nodes: ['L1', 'L2'] },
-];
-
-export function BodyBoard({
-  state,
-  pickable,
-  onPick,
-  focus,
-}: {
-  state: GameState;
-  pickable?: Set<NodeId>;
-  onPick?: (n: NodeId) => void;
-  focus?: NodeId[];
-}) {
+export function ClimbPanel({ state }: { state: GameState }) {
+  const climbers = state.hunters.filter((h) => h.climbing);
   return (
     <div className="panel">
       <h3>
-        Colossus body
-        <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>
-          Back 1 pt · Head 2 pts · spent until next Tumble
+        Climb &amp; Burst
+        <span className="muted" style={{ fontSize: 13, fontWeight: 400, fontFamily: 'var(--font)' }}>
+          {BURST_TARGET} damage on the core = 1 Vital Strike
         </span>
       </h3>
-      <div className="body-board">
-        {TIERS.map((t) => (
-          <BodyTier key={t.label} tier={t} state={state} pickable={pickable} onPick={onPick} focus={focus} />
-        ))}
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <span>
+          Burst <b>{state.burst}</b> / {BURST_TARGET}
+        </span>
+        <span className="muted" style={{ fontSize: 14 }}>
+          {climbers.length ? `${climbers.length} on the Colossus` : state.tumble ? 'Tumbled: adjacent Hunters may climb' : 'Nobody climbing'}
+        </span>
       </div>
+      <div className="bar burst" style={{ margin: '4px 0 6px' }}>
+        <div style={{ width: `${(100 * Math.min(state.burst, BURST_TARGET)) / BURST_TARGET}%` }} />
+      </div>
+      {climbers.map((h) => (
+        <div key={h.seat} className="row" style={{ fontSize: 14 }}>
+          <span className="seat-dot" style={{ background: ROLE_COLOR[h.cls], width: 20, height: 20, fontSize: 11 }}>
+            {ROLE_LETTER[h.cls]}
+          </span>
+          {CLASSES[h.cls].short} {h.pos === state.colossus.center ? 'is on the CORE' : 'is on the body'}
+          <span className="muted">· shaken off at the end of round {(h.mountedRound ?? state.round) + 1}</span>
+        </div>
+      ))}
     </div>
-  );
-}
-
-function BodyTier({
-  tier,
-  state,
-  pickable,
-  onPick,
-  focus,
-}: {
-  tier: (typeof TIERS)[number];
-  state: GameState;
-  pickable?: Set<NodeId>;
-  onPick?: (n: NodeId) => void;
-  focus?: NodeId[];
-}) {
-  return (
-    <>
-      <div className="tier-label">{tier.label}</div>
-      {tier.nodes.map((n) => {
-        const pts = NODE_POINTS[n];
-        const climbers = state.hunters.filter((h) => h.node === n && !h.exhausted);
-        const pick = pickable?.has(n);
-        return (
-          <button
-            key={n}
-            className={`node${pts ? ' vital' : ''}${state.spentNodes.includes(n) ? ' spent' : ''}${pick ? ' pick' : ''}${focus?.includes(n) ? ' focus' : ''}`}
-            disabled={!pick}
-            onClick={pick && onPick ? () => onPick(n) : undefined}
-            style={{ opacity: !pick && pickable ? 0.7 : undefined }}
-          >
-            <div style={{ fontSize: 12 }}>{NODE_NAMES[n]}</div>
-            {pts > 0 && <span className="pts">{pts} pt{pts > 1 ? 's' : ''}</span>}
-            <div className="climbers">
-              {climbers.map((h) => (
-                <span key={h.seat} className="seat-dot" style={{ background: ROLE_COLOR[h.cls], width: 'auto', padding: '0 6px', borderRadius: 999 }}>
-                  {ROLE_LETTER[h.cls]} · Grip {h.grip}
-                </span>
-              ))}
-            </div>
-          </button>
-        );
-      })}
-    </>
   );
 }
 
@@ -106,7 +60,6 @@ function seatState(state: GameState, seat: SeatInfo): { text: string; tone: '' |
     return { text: 'revealing…', tone: 'wait' };
   }
   const h = state.hunters[seat.seat - 1];
-  if (h.exhausted) return { text: 'Exhausted', tone: '' };
   if (h.down) return { text: 'Down', tone: '' };
   if (state.phase === 'bossLock') return { text: 'waiting for the Colossus', tone: '' };
   if (state.phase === 'hunterCommit') return state.commits[seat.seat - 1] ? { text: 'committed ✓', tone: 'done' } : { text: 'choosing…', tone: 'wait' };
@@ -212,15 +165,14 @@ function HunterRow({ h, seat, you }: { h: HunterState; seat: SeatInfo; you: numb
           </span>
         </div>
         <div className="statuses">
-          {h.exhausted && <span className="tag bad">Exhausted</span>}
           {h.down && <span className="tag bad">Down{h.revived ? '' : ' · revivable'}</span>}
-          {h.node && <span className="tag warn">Climbing · Grip {h.grip}</span>}
+          {h.climbing && <span className="tag warn">Climbing</span>}
           {h.exposed && <span className="tag bad">Exposed</span>}
           {h.exposedNext && <span className="tag bad">Exposed next round</span>}
           {h.shield > 0 && <span className="tag ok">Shield {h.shield}</span>}
           {h.cls === 'slasher' && h.momentum > 0 && <span className="tag ok">Momentum +{h.momentum}</span>}
-          <span className="tag" title={`Hand: ${h.hand.map((x) => hunterDef(x).name).join(', ')}\nDiscard: ${h.discard.map((x) => hunterDef(x).name).join(', ')}\nBurned: ${h.burned.map((x) => hunterDef(x).name).join(', ')}`}>
-            Hand {h.hand.length} · Discard {h.discard.length} · Burned {h.burned.length}
+          <span className="tag" title={`Hand: ${h.hand.map((x) => hunterDef(x).name).join(', ')}\nDiscard: ${h.discard.map((x) => hunterDef(x).name).join(', ')}`}>
+            Hand {h.hand.length} · Discard {h.discard.length}
           </span>
           <span className="tag" title={h.dice.map((d) => DIE_LABEL[d]).join(', ')}>
             Dice {h.dice.map((d) => d[0].toUpperCase()).join('')}
