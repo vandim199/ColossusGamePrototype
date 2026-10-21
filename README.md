@@ -61,22 +61,23 @@ Every simulated game runs through the same path as real play. Each seat sees onl
 
 The report compares each stat to the GDD's playtest targets: game length, win rate, Parries, rounds per strike point, climbs, Bursts and shake-offs, Colossus moves, Armor damage per standing round and more.
 
-Baseline with v2.5 numbers and both bots on `normal` (seeds 1-200):
+Baseline with the Oct 21 playtest rules (see RULINGS.md) and both bots on `normal` (seeds 1-200):
 
 | | 1v3 | 1v4 | GDD target |
 | --- | --- | --- | --- |
-| Hunter win rate | 50% | 55% | |
-| Mean game length (rounds) | 16.9 | 23.2 | 14-18 |
-| Rounds per strike point | 5.2 | 5.3 | 3-4 |
-| Successful Parries / game | 0.43 | 0.35 | 2-4 |
-| Exhaustions / game | 0.12 | 0.57 | rare |
-| Rounds a climber stays on | 2.8 | 2.9 | 1-3 |
-| Armor damage / standing round | 3.8 | 4.6 | ~7 (1v4) |
+| Hunter win rate | 12% | 47.5% | |
+| Mean game length (rounds) | 24.5 | 35.6 | 14-18 |
+| Rounds per strike point | 11.2 | 8.6 | 3-4 |
+| Successful Parries / game | 7.0 | 13.4 | 2-4 |
+| Climbs / game (Bursts landed) | 9.2 (2.2) | 18.2 (4.1) | |
+| Armor damage / standing round | 4.8 | 6.7 | ~7 (1v4) |
+
+The dials worth trying first are `BURST_TARGET` and `SHAKE_DAMAGE` in `src/engine/board.ts`, the 5 damage per Red Cube in `src/engine/engine.ts`, and Armor per Hunter in `src/engine/setup.ts`.
 
 **Reading the numbers.** The bots are heuristic one-ply planners. Treat the stats as relative: compare a rules change against this baseline, not against the targets. In particular:
 
-- The Colossus bot avoids Hunters who hold Parry. The Hunter bot only parries when it reads that it is the likely target. That keeps Parries rare, so the Parry stat is a lower bound for human play.
-- Difficulty shifts the win rate as expected. A hard Colossus against easy Hunters wins ~60%. An easy Colossus against hard Hunters wins ~32%.
+- Parry is now cheap (it can be played alone) and Quick Attacks hit areas, so bots parry often. Treat the Parry count as a property of the bots as much as of the rules.
+- Bot difficulty (`--boss`, `--hunters`) shifts the win rate. Re-measure before comparing across difficulties.
 
 ## Deploying to GitHub Pages
 
