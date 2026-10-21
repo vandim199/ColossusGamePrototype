@@ -392,6 +392,7 @@ function rescueBeam(s: GameState, h: HunterState, target?: number) {
   const moved = pullToward(s, t, h.pos, roll);
   log(s, '3.1', 'heal', `${hunterName(h)} fires Rescue Beam: Pull d6 rolls ${roll}, ${hunterName(t)} is pulled ${plural(moved, 'hex')}.`, {
     seat: h.seat,
+    dice: { seat: h.seat, label: 'Rescue Beam', kinds: ['pull'], faces: [roll], bonus: 0, total: roll, halved: false },
     hexes: [from, t.pos],
   });
 }
@@ -600,15 +601,25 @@ function attackDice(h: HunterState, roll: 'pool' | 'vector'): DieKind[] {
   return base;
 }
 
-function rollAttack(s: GameState, h: HunterState, def: HunterCardDef): { faces: number[]; total: number; detail: string } {
+function rollAttack(s: GameState, h: HunterState, def: HunterCardDef): { kinds: DieKind[]; faces: number[]; bonus: number; total: number; detail: string } {
   if (def.attack?.roll === 'sledge') {
     const f = rollDie('heavy', () => rand(s));
-    return { faces: [f], total: 3 + f, detail: `3 + Heavy d8 [${f}]` };
+    return { kinds: ['heavy'], faces: [f], bonus: 3, total: 3 + f, detail: `3 + Heavy d8 [${f}]` };
   }
-  const dice = attackDice(h, def.attack?.roll === 'vector' ? 'vector' : 'pool');
-  const faces = dice.map((k) => rollDie(k, () => rand(s)));
-  return { faces, total: faces.reduce((a, b) => a + b, 0), detail: `[${faces.join(' ')}]` };
+  const kinds = attackDice(h, def.attack?.roll === 'vector' ? 'vector' : 'pool');
+  const faces = kinds.map((k) => rollDie(k, () => rand(s)));
+  return { kinds, faces, bonus: 0, total: faces.reduce((a, b) => a + b, 0), detail: `[${faces.join(' ')}]` };
 }
+
+const diceOf = (h: HunterState, label: string, r: { kinds: DieKind[]; faces: number[]; bonus: number }, total: number, halved: boolean) => ({
+  seat: h.seat,
+  label,
+  kinds: r.kinds,
+  faces: r.faces,
+  bonus: r.bonus,
+  total,
+  halved,
+});
 
 function attack(s: GameState, h: HunterState, def: HunterCardDef, ctx: { halve: boolean }) {
   if (h.climbing) {
@@ -623,6 +634,7 @@ function attack(s: GameState, h: HunterState, def: HunterCardDef, ctx: { halve: 
     log(s, '3.4', 'strike', `${hunterName(h)} drives ${def.name} into the CORE: ${r.detail} = ${dmg}. Burst ${s.burst}/${BURST_TARGET}.`, {
       seat: h.seat,
       bossHit: dmg > 0,
+      dice: diceOf(h, `${def.name} on the core`, r, dmg, ctx.halve),
     });
     if (s.burst >= BURST_TARGET) vitalStrike(s);
     return;
@@ -641,6 +653,7 @@ function attack(s: GameState, h: HunterState, def: HunterCardDef, ctx: { halve: 
   log(s, '3.4', 'hunter', `${hunterName(h)}'s ${def.name} rolls ${r.detail} = ${r.total}${ctx.halve ? `, halved to ${dmg}` : ''}. Armor ${s.colossus.armor}.`, {
     seat: h.seat,
     bossHit: dealt > 0,
+    dice: diceOf(h, def.name, r, dmg, ctx.halve),
   });
   if (def.attack?.bleed && r.faces.filter((f) => f === 2).length >= 2) {
     s.colossus.bleed = 2;

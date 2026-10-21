@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { verifyCommitment, type HexKey, type LogEvent, type Snapshot } from '../engine';
+import { verifyCommitment, type DiceRoll, type HexKey, type LogEvent, type Snapshot } from '../engine';
 import type { Session } from '../host/session';
 import { roleName, type ClientView } from '../host/types';
 import { Board, type ShakeCue } from './Board';
+import { DiceTray } from './Dice';
 import { BossControls, HunterControls, RevealedBossCard, teammateArrows, type BoardOverlay } from './Controls';
 import { ClimbPanel, ColossusPanel, CombatLog, HuntersPanel, StatusStrip } from './Panels';
 
@@ -38,6 +39,9 @@ interface ReplayCue {
   hexes: HexKey[];
   snap?: Snapshot;
   shake?: ShakeCue;
+  dice?: DiceRoll;
+  /** Event index: restarts the dice animation for every new roll. */
+  index: number;
 }
 
 function cueFor(e: LogEvent | undefined, index: number): ReplayCue | null {
@@ -47,6 +51,8 @@ function cueFor(e: LogEvent | undefined, index: number): ReplayCue | null {
     hexes: e.hexes ?? [],
     snap: e.snap,
     shake: hurt.length || e.bossHit ? { key: index, seats: hurt, boss: !!e.bossHit } : undefined,
+    dice: e.dice,
+    index,
   };
 }
 
@@ -74,9 +80,13 @@ function RevealOverlay({
     if (shown >= events.length) return;
     const e = events[shown];
     const big = e.tone === 'big' || e.tone === 'parry' || e.tone === 'strike';
-    const t = setTimeout(() => setShown((n) => n + 1), shown === 0 ? 900 : big ? 1300 : 650);
+    // The step just shown stays up long enough to read; a dice roll needs time to tumble and land.
+    const prev = events[shown - 1];
+    const t = setTimeout(() => setShown((n) => n + 1), shown === 0 ? 900 : prev?.dice ? 2000 : big ? 1300 : 650);
     return () => clearTimeout(t);
-  }, [shown, events]);
+    // The events array is rebuilt on every render; only its length matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown, events.length]);
 
   useEffect(() => {
     const i = Math.max(0, shown - 1);
@@ -204,6 +214,7 @@ export function GameScreen({ session, onExit }: { session: Session; onExit: () =
           snap={cue?.snap}
           shake={cue?.shake}
         />
+        {cue?.dice && <DiceTray key={cue.index} roll={cue.dice} state={s} />}
       </div>
       <div className="side">
         <ColossusPanel state={s} you={you} />
